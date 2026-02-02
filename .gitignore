@@ -33,3 +33,4 @@ htmlcov/
 node_modules/
 
 
+email-processing/data/*.db
