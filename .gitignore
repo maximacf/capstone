@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env
+
+# Databases
+*.sqlite3
+dev.db
+
+# Builds
+dist/
+build/
+
+# IDEs
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# logs
+*.log
+
+# test outputs
+.coverage
+htmlcov/
+
+# node (if any)
+node_modules/
+
+
