@@ -3,242 +3,145 @@
 # This Script creates + manages a local database (with SQLite)
 
 
+import glob
 import hashlib
 import os
-# Foundation layer — creates & manages the local SQLite database (idempotent)
+import re
 import sqlite3
 from contextlib import closing
+
+# Foundation layer — creates & manages the local SQLite database (idempotent)
 
 # DB_PATH: canonical database location (env override supported)
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_DB = os.path.join(BASE_DIR, "data", "mail.db")
 DB_PATH = os.environ.get("DB_PATH", DEFAULT_DB)
-
-SCHEMA = """
-PRAGMA journal_mode=WAL;
-
--- =======================
--- BRONZE: exact Graph payload (audit/replay)
--- =======================
-CREATE TABLE IF NOT EXISTS raw_message (
-  id            TEXT PRIMARY KEY,              -- Graph message id
-  internet_id   TEXT UNIQUE,                   -- RFC 5322 internetMessageId
-  received_dt   TEXT NOT NULL,                 -- ISO8601
-  from_addr     TEXT,
-  subject       TEXT,
-  body_html     TEXT,                          -- Graph body.content (may be HTML)
-  body_type     TEXT CHECK(body_type IN ('html','text')) DEFAULT 'html',
-  json_path     TEXT,                          -- optional: sidecar JSON path
-  created_ts    TEXT DEFAULT (datetime('now'))
-);
-CREATE INDEX IF NOT EXISTS idx_raw_received ON raw_message(received_dt);
-
--- =======================
--- SILVER: normalized & queryable
--- =======================
-CREATE TABLE IF NOT EXISTS message (
-  id TEXT PRIMARY KEY,                         -- Graph id (same as raw_message.id)
-  internet_id TEXT UNIQUE,                     -- for dedupe/upsert
-  received_dt TEXT,
-  from_addr   TEXT,
-  from_domain TEXT,
-  subject     TEXT,
-  body_text   TEXT,                            -- HTML→text normalized
-  body_html   TEXT,                            -- optional copy of raw HTML
-  category    TEXT,                            -- Trades/Clients/Research/Internal
-  source_hash TEXT,                            -- fallback dedupe if internet_id missing
-  manual_category TEXT,                        -- human override (nullable)
-  updated_ts  TEXT DEFAULT (datetime('now'))
-);
-CREATE INDEX IF NOT EXISTS idx_message_received ON message(received_dt);
-CREATE INDEX IF NOT EXISTS idx_message_category ON message(COALESCE(manual_category, category));
-
--- convenience view exposing "current" category
-CREATE VIEW IF NOT EXISTS vw_message AS
-SELECT m.*,
-       COALESCE(m.manual_category, m.category) AS category_current
-FROM message m;
-
--- =======================
--- ATTACHMENTS
--- =======================
-CREATE TABLE IF NOT EXISTS attachment (
-  id            TEXT PRIMARY KEY,              -- Graph attachment id
-  message_id    TEXT NOT NULL,                 -- FK -> message.id
-  name          TEXT,
-  content_type  TEXT,
-  size_bytes    INTEGER,
-  path          TEXT,                          -- local saved file path
-  created_ts    TEXT DEFAULT (datetime('now')),
-  FOREIGN KEY(message_id) REFERENCES message(id) ON DELETE CASCADE
-);
-CREATE INDEX IF NOT EXISTS idx_att_msg  ON attachment(message_id);
-CREATE INDEX IF NOT EXISTS idx_att_name ON attachment(name);
-
--- =======================
--- IDEAS (Gold): parsed trade fields (allow multiple ideas per message)
--- =======================
-CREATE TABLE IF NOT EXISTS idea (
-  id           INTEGER PRIMARY KEY AUTOINCREMENT,
-  message_id   TEXT NOT NULL,                 -- FK -> message.id
-  product      TEXT,                          -- Rates/FX/Credit
-  ccy          TEXT,                          -- EUR/USD/...
-  tenor        TEXT,                          -- 5y, 2s10s, etc.
-  direction    TEXT,                          -- Long/Short/Pay/Receive
-  entry_level  REAL,
-  target_level REAL,
-  stop_level   REAL,
-  horizon      TEXT,                          -- 1w, 1m, ASAP, etc.
-  status       TEXT,                          -- Live/Closed/OnWatch
-  owner        TEXT,                          -- salesperson/desk
-  confidence   TEXT,
-  tags         TEXT,                          -- CSV for v1 (fast); can normalize later
-  extracted_by TEXT DEFAULT 'rules_v1',
-  extracted_ts TEXT DEFAULT (datetime('now')),
-  FOREIGN KEY(message_id) REFERENCES message(id) ON DELETE CASCADE
-);
-CREATE INDEX IF NOT EXISTS idx_idea_message ON idea(message_id);
-CREATE INDEX IF NOT EXISTS idx_idea_product ON idea(product);
-CREATE INDEX IF NOT EXISTS idx_idea_ccy     ON idea(ccy);
-CREATE INDEX IF NOT EXISTS idx_idea_tenor   ON idea(tenor);
-CREATE INDEX IF NOT EXISTS idx_idea_status  ON idea(status);
-
--- =======================
--- Classification provenance (audit/improvement)
--- =======================
-CREATE TABLE IF NOT EXISTS classification_event (
-  id            INTEGER PRIMARY KEY AUTOINCREMENT,
-  message_id    TEXT NOT NULL,
-  category_auto TEXT NOT NULL,
-  rule_name     TEXT,                         -- e.g., TRADE_WORDS_TENOR_V1
-  confidence    REAL,                         -- 0..1
-  created_ts    TEXT DEFAULT (datetime('now')),
-  FOREIGN KEY(message_id) REFERENCES message(id) ON DELETE CASCADE
-);
-CREATE INDEX IF NOT EXISTS idx_cls_msg  ON classification_event(message_id);
-CREATE INDEX IF NOT EXISTS idx_cls_time ON classification_event(created_ts);
-"""
+MIGRATIONS_DIR = os.path.join(BASE_DIR, "migrations")
 
 
-# ---- Minimal migration + updated connect() ----
+# ---- Migration system (DB-first, explicit SQL) ----
+
+
 def _column_missing(con, table, column):
+    """Check if a column exists in a table."""
     cols = [r[1] for r in con.execute(f"PRAGMA table_info({table})")]
     return column not in cols
 
 
-def migrate_v2(con):
+def _get_applied_versions(con):
+    """Get list of migration versions that have been applied."""
+    try:
+        rows = con.execute("SELECT version FROM schema_version ORDER BY version").fetchall()
+        return {row[0] for row in rows}
+    except sqlite3.OperationalError:
+        # schema_version table doesn't exist yet
+        return set()
+
+
+def _get_migration_files():
+    """Get migration SQL files in order (000, 001, 002, ...)."""
+    pattern = os.path.join(MIGRATIONS_DIR, "*.sql")
+    files = glob.glob(pattern)
+    # Extract version number from filename (e.g., "001_initial_schema.sql" -> 1)
+    migrations = []
+    for f in files:
+        basename = os.path.basename(f)
+        match = re.match(r"^(\d+)_", basename)
+        if match:
+            version = int(match.group(1))
+            migrations.append((version, f))
+    migrations.sort(key=lambda x: x[0])
+    return migrations
+
+
+def _apply_migration(con, version, sql_file):
+    """Apply a single migration file. Handles special cases for ALTER TABLE."""
     cur = con.cursor()
-
-    # Add cross-cutting fields to message if they don't exist
-    alters = []
-    for col, sql in [
-        (
-            "urgency",
-            "ALTER TABLE message ADD COLUMN urgency TEXT CHECK (urgency IN ('high','medium','low','none')) DEFAULT 'none'",
-        ),
-        ("language", "ALTER TABLE message ADD COLUMN language TEXT"),
-        (
-            "has_attachment",
-            "ALTER TABLE message ADD COLUMN has_attachment INTEGER DEFAULT 0",
-        ),
-        ("thread_id", "ALTER TABLE message ADD COLUMN thread_id TEXT"),
-        ("to_addresses", "ALTER TABLE message ADD COLUMN to_addresses TEXT"),
-        ("cc_addresses", "ALTER TABLE message ADD COLUMN cc_addresses TEXT"),
-        ("entities", "ALTER TABLE message ADD COLUMN entities TEXT"),
-    ]:
-        if _column_missing(con, "message", col):
-            alters.append(sql)
-    for sql in alters:
-        cur.execute(sql)
-
-    # Indexes (safe to re-create)
-    cur.executescript(
-        """
-        CREATE INDEX IF NOT EXISTS idx_msg_urgency ON message(urgency);
-        CREATE INDEX IF NOT EXISTS idx_msg_thread  ON message(thread_id);
-    """
-    )
-
-    # Full-Text Search (subject/body/entities) for fast UI queries
+    
+    # Read SQL file
+    with open(sql_file, "r") as f:
+        sql_content = f.read()
+    
+    # Special handling for migration 002 (needs column existence checks)
+    # SQLite doesn't support IF NOT EXISTS for ALTER TABLE ADD COLUMN
+    if version == 2:
+        # Add columns only if they don't exist
+        column_additions = [
+            ("urgency", "ALTER TABLE message ADD COLUMN urgency TEXT CHECK (urgency IN ('high','medium','low','none')) DEFAULT 'none'"),
+            ("language", "ALTER TABLE message ADD COLUMN language TEXT"),
+            ("has_attachment", "ALTER TABLE message ADD COLUMN has_attachment INTEGER DEFAULT 0"),
+            ("thread_id", "ALTER TABLE message ADD COLUMN thread_id TEXT"),
+            ("to_addresses", "ALTER TABLE message ADD COLUMN to_addresses TEXT"),
+            ("cc_addresses", "ALTER TABLE message ADD COLUMN cc_addresses TEXT"),
+            ("entities", "ALTER TABLE message ADD COLUMN entities TEXT"),
+        ]
+        for col_name, alter_sql in column_additions:
+            if _column_missing(con, "message", col_name):
+                cur.execute(alter_sql)
+        
+        # Execute the rest of the migration (indexes, FTS, triggers)
+        # The SQL file contains CREATE INDEX/CREATE VIRTUAL TABLE which are idempotent
+        cur.executescript(sql_content)
+    
+    # Special handling for migration 003 (needs column existence checks)
+    elif version == 3:
+        column_additions = [
+            ("mailbox_id", "ALTER TABLE raw_message ADD COLUMN mailbox_id TEXT DEFAULT 'me'"),
+            ("mailbox_type", "ALTER TABLE raw_message ADD COLUMN mailbox_type TEXT CHECK (mailbox_type IN ('personal','shared')) DEFAULT 'personal'"),
+        ]
+        for col_name, alter_sql in column_additions:
+            if _column_missing(con, "raw_message", col_name):
+                cur.execute(alter_sql)
+        
+        # Execute the rest (indexes, mailbox_emails table - all use IF NOT EXISTS)
+        cur.executescript(sql_content)
+    
+    else:
+        # Standard migration: execute SQL as-is (uses IF NOT EXISTS)
+        cur.executescript(sql_content)
+    
+    # Record migration in schema_version
+    description = os.path.basename(sql_file).replace(".sql", "").replace("_", " ").title()
     cur.execute(
-        """
-        CREATE VIRTUAL TABLE IF NOT EXISTS message_fts USING fts5(
-            subject, body_text, entities, content='message', content_rowid='rowid'
-        )
-    """
-    )
-    cur.executescript(
-        """
-        CREATE TRIGGER IF NOT EXISTS message_ai AFTER INSERT ON message BEGIN
-          INSERT INTO message_fts(rowid, subject, body_text, entities)
-          VALUES (new.rowid, new.subject, new.body_text, COALESCE(new.entities,''));
-        END;
-        CREATE TRIGGER IF NOT EXISTS message_ad AFTER DELETE ON message BEGIN
-          INSERT INTO message_fts(message_fts, rowid, subject, body_text, entities)
-          VALUES('delete', old.rowid, old.subject, old.body_text, COALESCE(old.entities,''));
-        END;
-        CREATE TRIGGER IF NOT EXISTS message_au AFTER UPDATE ON message BEGIN
-          INSERT INTO message_fts(message_fts, rowid, subject, body_text, entities)
-          VALUES('delete', old.rowid, old.subject, old.body_text, COALESCE(old.entities,''));
-          INSERT INTO message_fts(rowid, subject, body_text, entities)
-          VALUES (new.rowid, new.subject, new.body_text, COALESCE(new.entities,''));
-        END;
-    """
+        "INSERT INTO schema_version (version, description) VALUES (?, ?)",
+        (version, description)
     )
     con.commit()
 
 
-def migrate_v3(con):
-    cur = con.cursor()
-
-    # v3 is so that we know when email comes from a shared vs personal inbox
-    alters = []
-    for col, sql in [
-        (
-            "mailbox_id",
-            "ALTER TABLE raw_message ADD COLUMN mailbox_id TEXT DEFAULT 'me'",
-        ),
-        (
-            "mailbox_type",
-            "ALTER TABLE raw_message ADD COLUMN mailbox_type TEXT CHECK (mailbox_type IN ('personal','shared')) DEFAULT 'personal'",
-        ),
-    ]:
-        if _column_missing(con, "raw_message", col):
-            alters.append(sql)
-    for sql in alters:
-        cur.execute(sql)
-
-    cur.executescript(
-        """
-    CREATE INDEX IF NOT EXISTS idx_raw_mailbox ON raw_message(mailbox_id, received_dt);
-
-    -- 2) Create mailbox-specific mapping (this is your "Create Mailbox-Email Entry")
-    CREATE TABLE IF NOT EXISTS mailbox_emails (
-      id            INTEGER PRIMARY KEY AUTOINCREMENT,
-      mailbox_id    TEXT NOT NULL,
-      mailbox_type  TEXT CHECK (mailbox_type IN ('personal','shared')) NOT NULL,
-      canonical_key TEXT NOT NULL,           -- prefer internet_id, fallback to raw_message.id
-      raw_id        TEXT NOT NULL,           -- Graph message id (raw_message.id)
-      seen          INTEGER DEFAULT 0,
-      processed     INTEGER DEFAULT 0,
-      created_ts    TEXT DEFAULT (datetime('now')),
-      UNIQUE(mailbox_id, canonical_key)
-    );
-    CREATE INDEX IF NOT EXISTS idx_mb_processed ON mailbox_emails(processed, created_ts);
-    """
-    )
-    con.commit()
+def _run_migrations(con):
+    """Run all unapplied migrations in order."""
+    applied = _get_applied_versions(con)
+    migrations = _get_migration_files()
+    
+    for version, sql_file in migrations:
+        if version not in applied:
+            _apply_migration(con, version, sql_file)
 
 
 def connect():
+    """
+    Connect to database and ensure schema is up-to-date.
+    Idempotent: runs migrations only if needed.
+    """
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     con = sqlite3.connect(DB_PATH)
     # durability + concurrency
     con.execute("PRAGMA journal_mode=WAL;")
-    with closing(con.cursor()) as cur:
-        cur.executescript(SCHEMA)
-    migrate_v2(con)
-    migrate_v3(con)  # new for the shared
+    
+    # Ensure schema_version table exists (migration 000)
+    try:
+        con.execute("SELECT 1 FROM schema_version LIMIT 1")
+    except sqlite3.OperationalError:
+        # Run migration 000 first
+        migration_000 = os.path.join(MIGRATIONS_DIR, "000_schema_version.sql")
+        if os.path.exists(migration_000):
+            with open(migration_000, "r") as f:
+                con.executescript(f.read())
+    
+    # Run all migrations
+    _run_migrations(con)
+    
     return con
 
 
