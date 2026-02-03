@@ -524,6 +524,81 @@ def upsert_email_flag(con, row):
     con.commit()
 
 
+# ---------- User config (versioned) ----------
+def ensure_user(con, user_id, org_id, email=None, name=None):
+    with closing(con.cursor()) as cur:
+        cur.execute(
+            """
+            INSERT INTO user(user_id, org_id, email, name)
+            VALUES(?, ?, ?, ?)
+            ON CONFLICT(user_id) DO UPDATE SET
+              org_id = excluded.org_id,
+              email = COALESCE(excluded.email, user.email),
+              name = COALESCE(excluded.name, user.name)
+            """,
+            (user_id, org_id, email, name),
+        )
+    con.commit()
+
+
+def upsert_user_config(con, row):
+    """
+    row keys: user_id, classifications_json, preferences_json, config_version
+    """
+    with closing(con.cursor()) as cur:
+        cur.execute(
+            """
+            INSERT INTO user_config(
+              user_id, classifications_json, preferences_json, config_version, last_updated_at
+            )
+            VALUES(
+              :user_id, :classifications_json, :preferences_json, :config_version, datetime('now')
+            )
+            ON CONFLICT(user_id) DO UPDATE SET
+              classifications_json = excluded.classifications_json,
+              preferences_json = excluded.preferences_json,
+              config_version = excluded.config_version,
+              last_updated_at = datetime('now')
+            """,
+            row,
+        )
+    con.commit()
+
+
+def insert_user_config_version(con, row):
+    """
+    row keys: user_id, version, classifications_json, preferences_json
+    """
+    with closing(con.cursor()) as cur:
+        cur.execute(
+            """
+            INSERT INTO user_config_versions(
+              user_id, version, classifications_json, preferences_json, created_at
+            )
+            VALUES(
+              :user_id, :version, :classifications_json, :preferences_json, datetime('now')
+            )
+            """,
+            row,
+        )
+    con.commit()
+
+
+def insert_user_config_audit(con, row):
+    """
+    row keys: user_id, diff_json, actor
+    """
+    with closing(con.cursor()) as cur:
+        cur.execute(
+            """
+            INSERT INTO user_config_audit(user_id, diff_json, created_at, actor)
+            VALUES(:user_id, :diff_json, datetime('now'), :actor)
+            """,
+            row,
+        )
+    con.commit()
+
+
 # ---------- Idea insert (returns rowid) ----------
 def insert_idea(con, row):
     """
@@ -575,6 +650,10 @@ def log_classification_event(
 # - upsert_automation_run(con, row: dict) -> None
 # - upsert_artifact(con, row: dict) -> None
 # - upsert_email_flag(con, row: dict) -> None
+# - ensure_user(con, user_id, org_id, email=None, name=None) -> None
+# - upsert_user_config(con, row: dict) -> None
+# - insert_user_config_version(con, row: dict) -> None
+# - insert_user_config_audit(con, row: dict) -> None
 # - upsert_attachment(con, row: dict) -> None
 # - insert_idea(con, row: dict) -> int (returns rowid)
 # - log_classification_event(con, message_id, category_auto, rule_name=None, confidence=None) -> None
