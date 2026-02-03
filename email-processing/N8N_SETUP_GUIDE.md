@@ -88,17 +88,7 @@ y
 - **Name**: "Ingest Emails"
 - **Command**:
 ```bash
-cd "/Users/ifc/SynologyDrive/Year 5/Thesis/Data" && \
-DB_PATH="{{$json.db_path}}" \
-MAILBOX_ID="{{$json.mailbox_id}}" \
-MAILBOX_TYPE="{{$json.mailbox_type}}" \
-MSAL_CACHE_PATH="/Users/ifc/.msal_token_cache.json" \
-"/Users/ifc/SynologyDrive/Year 5/Thesis/Data/email-processing/.venv/bin/python" \
-email-processing/ingest_raw.py \
-  --mailbox-id "{{$json.mailbox_id}}" \
-  --mailbox-type "{{$json.mailbox_type}}" \
-  --pages {{$json.ingest_pages}} \
-  --top {{$json.ingest_top}}
+cd "/Users/ifc/SynologyDrive/Year 5/Thesis/Data" && DB_PATH="/Users/ifc/SynologyDrive/Year 5/Thesis/Data/email-processing/data/mail.db" MAILBOX_ID="me" MAILBOX_TYPE="personal" MSAL_CACHE_PATH="/Users/ifc/.msal_token_cache.json" "/Users/ifc/SynologyDrive/Year 5/Thesis/Data/email-processing/.venv/bin/python" email-processing/ingest_raw.py --mailbox-id "me" --mailbox-type "personal" --pages 1 --top 100
 ```
 
 - **Why MSAL_CACHE_PATH**: persists the device login token so future runs don’t hang.

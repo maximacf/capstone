@@ -1,6 +1,8 @@
 -- Migration 004: Enterprise model (orgs, users, mailboxes, canonical emails, outputs)
 -- Adds per-user configs, automation runs, artifacts, and flags
 -- Idempotent: uses IF NOT EXISTS throughout
+--- Content: orgs, users, mailboxes, canonical emails, mailbox_email mapping, per‑user configs + versions + audit, automation runs, artifacts, email flags.
+
 
 -- =======================
 -- ORGS + USERS
