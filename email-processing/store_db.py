@@ -437,6 +437,93 @@ def upsert_mailbox_email_map(con, row):
     con.commit()
 
 
+# ---------- Automation runs + artifacts ----------
+def upsert_automation_run(con, row):
+    """
+    row keys: run_id, org_id, mailbox_id, email_id, preference_id, action_type,
+              status, started_at, finished_at, model_name, params_json,
+              input_fingerprint, error_message
+    """
+    with closing(con.cursor()) as cur:
+        cur.execute(
+            """
+            INSERT INTO automation_run(
+              run_id, org_id, mailbox_id, email_id, preference_id,
+              action_type, status, started_at, finished_at, model_name,
+              params_json, input_fingerprint, error_message
+            )
+            VALUES(
+              :run_id, :org_id, :mailbox_id, :email_id, :preference_id,
+              :action_type, :status, :started_at, :finished_at, :model_name,
+              :params_json, :input_fingerprint, :error_message
+            )
+            ON CONFLICT(run_id) DO UPDATE SET
+              status = excluded.status,
+              finished_at = excluded.finished_at,
+              model_name = excluded.model_name,
+              params_json = excluded.params_json,
+              error_message = excluded.error_message
+            """,
+            row,
+        )
+    con.commit()
+
+
+def upsert_artifact(con, row):
+    """
+    row keys: artifact_id, run_id, email_id, artifact_type, content_text,
+              content_json, language, content_ptr
+    """
+    with closing(con.cursor()) as cur:
+        cur.execute(
+            """
+            INSERT INTO artifact(
+              artifact_id, run_id, email_id, artifact_type,
+              content_text, content_json, language, content_ptr
+            )
+            VALUES(
+              :artifact_id, :run_id, :email_id, :artifact_type,
+              :content_text, :content_json, :language, :content_ptr
+            )
+            ON CONFLICT(artifact_id) DO UPDATE SET
+              content_text = COALESCE(excluded.content_text, artifact.content_text),
+              content_json = COALESCE(excluded.content_json, artifact.content_json),
+              language = COALESCE(excluded.language, artifact.language),
+              content_ptr = COALESCE(excluded.content_ptr, artifact.content_ptr)
+            """,
+            row,
+        )
+    con.commit()
+
+
+def upsert_email_flag(con, row):
+    """
+    row keys: mailbox_email_id, has_summary, has_translation, has_extraction,
+              last_action_at, last_action_status
+    """
+    with closing(con.cursor()) as cur:
+        cur.execute(
+            """
+            INSERT INTO email_flag(
+              mailbox_email_id, has_summary, has_translation, has_extraction,
+              last_action_at, last_action_status
+            )
+            VALUES(
+              :mailbox_email_id, :has_summary, :has_translation, :has_extraction,
+              :last_action_at, :last_action_status
+            )
+            ON CONFLICT(mailbox_email_id) DO UPDATE SET
+              has_summary = MAX(excluded.has_summary, email_flag.has_summary),
+              has_translation = MAX(excluded.has_translation, email_flag.has_translation),
+              has_extraction = MAX(excluded.has_extraction, email_flag.has_extraction),
+              last_action_at = excluded.last_action_at,
+              last_action_status = excluded.last_action_status
+            """,
+            row,
+        )
+    con.commit()
+
+
 # ---------- Idea insert (returns rowid) ----------
 def insert_idea(con, row):
     """
@@ -485,6 +572,9 @@ def log_classification_event(
 # - ensure_mailbox(con, mailbox_id, org_id, mailbox_type, owner_user_id=None, name=None) -> None
 # - upsert_email(con, row: dict) -> None
 # - upsert_mailbox_email_map(con, row: dict) -> None
+# - upsert_automation_run(con, row: dict) -> None
+# - upsert_artifact(con, row: dict) -> None
+# - upsert_email_flag(con, row: dict) -> None
 # - upsert_attachment(con, row: dict) -> None
 # - insert_idea(con, row: dict) -> int (returns rowid)
 # - log_classification_event(con, message_id, category_auto, rule_name=None, confidence=None) -> None

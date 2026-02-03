@@ -2,15 +2,43 @@
 # Infrastructure layer: raw_message → normalized message + classification_event
 # Reads raw emails, cleans/normalizes content, classifies, and stores structured rows
 
+import hashlib
 import json
 import os
 import sys
+from datetime import datetime, timezone
 
 from classification import HybridClassifier, detect_urgency, html_to_text
-from store_db import (connect, log_classification_event, source_key,
-                      upsert_message)
+from store_db import (
+    connect,
+    log_classification_event,
+    source_key,
+    upsert_artifact,
+    upsert_automation_run,
+    upsert_email_flag,
+    upsert_message,
+)
 
 CLASSIFIER = HybridClassifier()
+ORG_ID = os.getenv("ORG_ID", "default_org")
+ENABLE_AUTOMATION_OUTPUTS = os.getenv("ENABLE_AUTOMATION_OUTPUTS", "").lower() in {
+    "1",
+    "true",
+    "yes",
+}
+
+
+def _now_iso():
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _run_id(mailbox_id, email_id, action_type, fingerprint):
+    key = f"{mailbox_id}|{email_id}|{action_type}|{fingerprint}"
+    return hashlib.sha256(key.encode()).hexdigest()
+
+
+def _artifact_id(run_id, artifact_type):
+    return hashlib.sha256(f"{run_id}|{artifact_type}".encode()).hexdigest()
 
 
 def process_new_raw_messages(limit=None, mailbox_id=None, dry_run=False):
@@ -30,7 +58,7 @@ def process_new_raw_messages(limit=None, mailbox_id=None, dry_run=False):
 
     # Build query with optional mailbox filter
     query = """
-        SELECT r.id, r.internet_id, r.received_dt, r.from_addr, r.subject, r.body_html
+        SELECT r.id, r.internet_id, r.received_dt, r.from_addr, r.subject, r.body_html, r.mailbox_id
         FROM raw_message r
         LEFT JOIN message m ON m.id = r.id
         WHERE m.id IS NULL
@@ -54,7 +82,7 @@ def process_new_raw_messages(limit=None, mailbox_id=None, dry_run=False):
     urgency_counts = {}
     source_counts = {}
 
-    for mid, iid, rdt, frm, subj, body_html in cur.fetchall():
+    for mid, iid, rdt, frm, subj, body_html, mb_id in cur.fetchall():
         body_text = html_to_text(body_html)
         result = CLASSIFIER.classify(subj or "", body_text, frm)
         category = result.label
@@ -93,6 +121,76 @@ def process_new_raw_messages(limit=None, mailbox_id=None, dry_run=False):
                 rule_name=result.detail or result.source,
                 confidence=result.confidence,
             )
+
+            # Enterprise automation outputs (optional)
+            if ENABLE_AUTOMATION_OUTPUTS and mb_id:
+                email_id = iid or mid
+                action_type = "extract"
+                fingerprint = hashlib.sha256(
+                    f"{email_id}|{category}|{urgency}|{result.source}".encode()
+                ).hexdigest()
+                run_id = _run_id(mb_id, email_id, action_type, fingerprint)
+                now_ts = _now_iso()
+
+                upsert_automation_run(
+                    con,
+                    {
+                        "run_id": run_id,
+                        "org_id": ORG_ID,
+                        "mailbox_id": mb_id,
+                        "email_id": email_id,
+                        "preference_id": None,
+                        "action_type": action_type,
+                        "status": "success",
+                        "started_at": now_ts,
+                        "finished_at": now_ts,
+                        "model_name": "rules_v1",
+                        "params_json": json.dumps(
+                            {"category": category, "urgency": urgency}
+                        ),
+                        "input_fingerprint": fingerprint,
+                        "error_message": None,
+                    },
+                )
+
+                artifact_payload = {
+                    "category": category,
+                    "urgency": urgency,
+                    "source": result.source,
+                    "rule_name": result.detail or result.source,
+                    "confidence": result.confidence,
+                }
+                upsert_artifact(
+                    con,
+                    {
+                        "artifact_id": _artifact_id(run_id, "extracted_fields"),
+                        "run_id": run_id,
+                        "email_id": email_id,
+                        "artifact_type": "extracted_fields",
+                        "content_text": None,
+                        "content_json": json.dumps(artifact_payload),
+                        "language": None,
+                        "content_ptr": None,
+                    },
+                )
+
+                # Update flags if mailbox_email mapping exists
+                mb_row = con.execute(
+                    "SELECT mailbox_email_id FROM mailbox_email WHERE mailbox_id = ? AND email_id = ?",
+                    (mb_id, email_id),
+                ).fetchone()
+                if mb_row:
+                    upsert_email_flag(
+                        con,
+                        {
+                            "mailbox_email_id": mb_row[0],
+                            "has_summary": 0,
+                            "has_translation": 0,
+                            "has_extraction": 1,
+                            "last_action_at": now_ts,
+                            "last_action_status": "success",
+                        },
+                    )
 
         processed_count += 1
         category_counts[category] = category_counts.get(category, 0) + 1
