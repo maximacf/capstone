@@ -8,31 +8,68 @@ import sys
 
 import msal
 import requests
-from store_db import connect, upsert_mailbox_email, upsert_raw_message
+from store_db import (
+    connect,
+    ensure_mailbox,
+    ensure_organization,
+    source_key,
+    upsert_email,
+    upsert_mailbox_email,
+    upsert_mailbox_email_map,
+    upsert_raw_message,
+)
 
 CLIENT_ID = os.getenv("CLIENT_ID", "32388b43-8fc8-443b-b36d-365f3b418a20")
-AUTHORITY = "https://login.microsoftonline.com/common"
+TENANT_ID = os.getenv("TENANT_ID", "common")
+AUTHORITY = f"https://login.microsoftonline.com/{TENANT_ID}"
 SCOPES = ["Mail.Read"]
 GRAPH = "https://graph.microsoft.com/v1.0"
+ORG_ID = os.getenv("ORG_ID", "default_org")
+OWNER_USER_ID = os.getenv("OWNER_USER_ID")
+MAILBOX_NAME = os.getenv("MAILBOX_NAME")
+
+CACHE_PATH = os.getenv(
+    "MSAL_CACHE_PATH", os.path.expanduser("~/.msal_token_cache.json")
+)
+
+
+def load_cache():
+    cache = msal.SerializableTokenCache()
+    if os.path.exists(CACHE_PATH):
+        with open(CACHE_PATH, "r", encoding="utf-8") as fh:
+            cache.deserialize(fh.read())
+    return cache
+
+
+def save_cache(cache):
+    if cache.has_state_changed:
+        with open(CACHE_PATH, "w", encoding="utf-8") as fh:
+            fh.write(cache.serialize())
 
 
 def get_token():
-    """Acquire OAuth token via device flow. Prints auth instructions to stderr."""
-    app = msal.PublicClientApplication(CLIENT_ID, authority=AUTHORITY)
-    flow = app.initiate_device_flow(scopes=SCOPES)
-    if "user_code" not in flow:
-        raise RuntimeError("Device flow failed")
-    print("\n Sign in:  Microsoft", file=sys.stderr)
-    print(
-        "URL :",
-        flow.get("verification_uri") or flow.get("verification_uri_complete"),
-        file=sys.stderr,
+    """Acquire OAuth token via device flow with a persistent MSAL cache."""
+    cache = load_cache()
+    app = msal.PublicClientApplication(
+        CLIENT_ID, authority=AUTHORITY, token_cache=cache
     )
-    print("CODE:", flow["user_code"], file=sys.stderr)
-    print("................................\n", file=sys.stderr)
-    result = app.acquire_token_by_device_flow(flow)
+
+    accounts = app.get_accounts()
+    result = None
+    if accounts:
+        result = app.acquire_token_silent(SCOPES, account=accounts[0])
+
+    if not result:
+        flow = app.initiate_device_flow(scopes=SCOPES)
+        if "user_code" not in flow:
+            raise RuntimeError(f"Failed to create device flow: {flow}")
+        print(flow["message"], flush=True, file=sys.stderr)
+        result = app.acquire_token_by_device_flow(flow)
+
+    save_cache(cache)
+
     if "access_token" not in result:
-        raise RuntimeError(result.get("error_description"))
+        raise RuntimeError(f"Auth failed: {result}")
     return result["access_token"]
 
 
@@ -73,6 +110,17 @@ def ingest_graph_messages(mailbox_id, mailbox_type, pages=1, top=100, dry_run=Fa
         con = None
     else:
         con = connect()
+        # Enterprise model: ensure org + mailbox exist
+        mailbox_type_mapped = "shared_team" if mailbox_type == "shared" else "personal"
+        ensure_organization(con, ORG_ID)
+        ensure_mailbox(
+            con,
+            mailbox_id=mailbox_id,
+            org_id=ORG_ID,
+            mailbox_type=mailbox_type_mapped,
+            owner_user_id=OWNER_USER_ID if mailbox_type_mapped == "personal" else None,
+            name=MAILBOX_NAME or mailbox_id,
+        )
 
     ingested_count = 0
     last_received_dt = None
@@ -113,6 +161,43 @@ def ingest_graph_messages(mailbox_id, mailbox_type, pages=1, top=100, dry_run=Fa
                     "mailbox_type": mailbox_type,
                     "canonical_key": canonical_key,
                     "raw_id": raw_id,
+                },
+            )
+
+            # Enterprise model: canonical email + mailbox mapping
+            upsert_email(
+                con,
+                {
+                    "email_id": canonical_key,
+                    "org_id": ORG_ID,
+                    "provider_msg_id": raw_id,
+                    "thread_id": None,
+                    "from_addr": (m.get("from") or {})
+                    .get("emailAddress", {})
+                    .get("address"),
+                    "to_addrs": None,
+                    "cc_addrs": None,
+                    "subject": m.get("subject"),
+                    "received_at": received_dt,
+                    "body_text": None,
+                    "body_html": (m.get("body") or {}).get("content"),
+                    "raw_mime_ptr": None,
+                    "content_hash": source_key(
+                        m.get("subject"),
+                        (m.get("from") or {}).get("emailAddress", {}).get("address"),
+                        received_dt,
+                    ),
+                },
+            )
+            upsert_mailbox_email_map(
+                con,
+                {
+                    "mailbox_id": mailbox_id,
+                    "email_id": canonical_key,
+                    "delivered_at": received_dt,
+                    "labels_json": None,
+                    "read_state": None,
+                    "archived_state": None,
                 },
             )
 

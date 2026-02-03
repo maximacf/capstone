@@ -8,6 +8,7 @@ DB-first system skeleton with explicit SQL migrations.
 - `001_initial_schema.sql` - Initial schema (bronze/silver/gold tables)
 - `002_add_message_fields.sql` - Cross-cutting fields (urgency, FTS, etc.)
 - `003_add_mailbox_support.sql` - Mailbox awareness (shared vs personal)
+- `004_enterprise_schema.sql` - Enterprise model (orgs, users, mailboxes, automation outputs)
 
 ## Idempotency Guarantees
 

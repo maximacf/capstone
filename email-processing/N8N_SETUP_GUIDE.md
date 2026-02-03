@@ -45,13 +45,16 @@ Your database path will be:
 
 ---
 
-## Step 3: Install SQLite Node in n8n
+## Step 3: (Optional) SQLite Node
 
-1. In n8n, go to **Settings** → **Community Nodes**
-2. Search for **"n8n-nodes-sqlite"** or **"SQLite"**
-3. Install it (or use the built-in SQLite node if available)
+You *tried* the community SQLite node, but on macOS the Linux build caused
+`better_sqlite3.node (not a mach-o file)` errors. To keep things simple and
+portable, we will:
 
-**Alternative**: Use **HTTP Request** node to call a Python script that executes SQL, but the SQLite node is cleaner.
+- **Skip the SQLite community node**, and
+- Use **Python + Execute Command** for all DB mutations.
+
+This respects the boundary: Python owns the DB layer; n8n orchestrates.
 
 ---
 
@@ -65,25 +68,40 @@ Your database path will be:
 ### Node 2: Set Configuration
 - **Type**: Set
 - **Name**: "Set Config"
-- **Add these fields** (click "Add Value" for each):
+- **What this does**: This node sets variables that every downstream node will use. It’s a single place to configure paths, mailbox, and limits so you don’t hardcode them in each node.
+- **Add these fields** (click "Add Value" for each). Use the **type** shown so n8n passes them correctly:
+y
+| Name | Type | Value | Why |
+|------|------|-------|-----|
+| `db_path` | **String** | `/Users/ifc/SynologyDrive/Year 5/Thesis/Data/email-processing/data/mail.db` | Full path to the SQLite DB file (must end in `mail.db`). |
+| `mailbox_id` | **String** | `me` | Your personal inbox; use a shared address for shared mailbox. |
+| `mailbox_type` | **String** | `personal` | Use `shared` for shared team mailboxes. |
+| `ingest_pages` | **Number** | `1` | One “page” of Graph API results. 1 page = up to `ingest_top` emails. Start with 1 for testing; increase (e.g. 2–5) for more emails per run. |
+| `ingest_top` | **Number** | `100` | Emails per page from Microsoft Graph (max 1000). |
+| `parse_limit` | **Number** | `250` | Max raw emails to parse per run (rules-only). Keeps runs bounded. |
+| `batch_size` | **Number** | `50` | How many mailbox_emails to consider “in batch” when checking backlog. |
 
-| Name | Value |
-|------|-------|
-| `db_path` | `/Users/ifc/SynologyDrive/Year 5/Thesis/Data/email-processing/data/mail.db` |
-| `mailbox_id` | `me` |
-| `mailbox_type` | `personal` |
-| `ingest_pages` | `1` |
-| `ingest_top` | `100` |
-| `parse_limit` | `250` |
-| `batch_size` | `50` |
+- **Types matter**: `db_path`, `mailbox_id`, `mailbox_type` = **String**. `ingest_pages`, `ingest_top`, `parse_limit`, `batch_size` = **Number** (so downstream nodes get numbers, not strings).
 
 ### Node 3: Ingest Raw Emails
 - **Type**: Execute Command
 - **Name**: "Ingest Emails"
 - **Command**:
 ```bash
-cd "/Users/ifc/SynologyDrive/Year 5/Thesis/Data" && DB_PATH="{{$json.db_path}}" MAILBOX_ID="{{$json.mailbox_id}}" MAILBOX_TYPE="{{$json.mailbox_type}}" python3 email-processing/ingest_raw.py --mailbox-id "{{$json.mailbox_id}}" --mailbox-type "{{$json.mailbox_type}}" --pages {{$json.ingest_pages}} --top {{$json.ingest_top}}
+cd "/Users/ifc/SynologyDrive/Year 5/Thesis/Data" && \
+DB_PATH="{{$json.db_path}}" \
+MAILBOX_ID="{{$json.mailbox_id}}" \
+MAILBOX_TYPE="{{$json.mailbox_type}}" \
+MSAL_CACHE_PATH="/Users/ifc/.msal_token_cache.json" \
+"/Users/ifc/SynologyDrive/Year 5/Thesis/Data/email-processing/.venv/bin/python" \
+email-processing/ingest_raw.py \
+  --mailbox-id "{{$json.mailbox_id}}" \
+  --mailbox-type "{{$json.mailbox_type}}" \
+  --pages {{$json.ingest_pages}} \
+  --top {{$json.ingest_top}}
 ```
+
+- **Why MSAL_CACHE_PATH**: persists the device login token so future runs don’t hang.
 
 - **Options** → **Retry**:
   - Enable retry: ✅
@@ -92,37 +110,26 @@ cd "/Users/ifc/SynologyDrive/Year 5/Thesis/Data" && DB_PATH="{{$json.db_path}}" 
 
 - **Error handling**: Connect to a "Log Error" node (we'll add this later)
 
-### Node 4: Mark Seen
-- **Type**: SQLite (or Code node with SQL)
+### Node 4: Mark Seen (Python)
+- **Type**: Execute Command
 - **Name**: "Mark Seen"
-- **Database File**: `{{$json.db_path}}`
-- **Operation**: Execute Query
-- **Query**:
-```sql
-UPDATE mailbox_emails
-SET seen = 1
-WHERE mailbox_id = ?
-  AND processed = 0;
+- **Command**:
+```bash
+cd "/Users/ifc/SynologyDrive/Year 5/Thesis/Data" && \
+DB_PATH="{{$json.db_path}}" \
+python3 email-processing/db_ops.py \
+  --op mark-seen \
+  --mailbox-id "{{$json.mailbox_id}}"
 ```
-- **Parameters**: `{{$json.mailbox_id}}`
 
-### Node 5: Fetch Backlog
-- **Type**: SQLite
-- **Name**: "Fetch Backlog"
-- **Database File**: `{{$json.db_path}}`
-- **Operation**: Execute Query
-- **Query**:
-```sql
-SELECT mailbox_id, mailbox_type, canonical_key, raw_id, created_ts
-FROM mailbox_emails
-WHERE mailbox_id = ?
-  AND processed = 0
-ORDER BY datetime(created_ts) ASC
-LIMIT ?;
-```
-- **Parameters**: 
-  - `{{$json.mailbox_id}}`
-  - `{{$json.batch_size}}`
+This flips `seen` from `0 → 1` in `mailbox_emails` for this mailbox.
+
+### Node 5: Fetch Backlog (Python helper, optional)
+For now you can **skip this node** and let `parse_load.py` select on its own:
+it already queries `raw_message` rows that are not yet in `message`.
+
+Later, if you want mailbox-specific backlog selection, we can add another
+small helper to `db_ops.py` and call it from Execute Command.
 
 ### Node 6: Check If Empty
 - **Type**: IF
@@ -141,23 +148,17 @@ cd "/Users/ifc/SynologyDrive/Year 5/Thesis/Data" && DB_PATH="{{$json.db_path}}" 
 
 - **Options** → **Retry**: 2 attempts, 10s backoff
 
-### Node 8: Mark Processed
-- **Type**: SQLite
+### Node 8: Mark Processed (Python)
+- **Type**: Execute Command
 - **Name**: "Mark Processed"
-- **Database File**: `{{$json.db_path}}`
-- **Query**:
-```sql
-UPDATE mailbox_emails
-SET processed = 1
-WHERE mailbox_id = ?
-  AND processed = 0
-  AND EXISTS (
-    SELECT 1
-    FROM message m
-    WHERE m.id = mailbox_emails.raw_id
-  );
+- **Command**:
+```bash
+cd "/Users/ifc/SynologyDrive/Year 5/Thesis/Data" && \
+DB_PATH="{{$json.db_path}}" \
+python3 email-processing/db_ops.py \
+  --op mark-processed \
+  --mailbox-id "{{$json.mailbox_id}}"
 ```
-- **Parameters**: `{{$json.mailbox_id}}`
 
 ### Node 9: Loop Back
 - **Type**: NoOp (or just connect Node 8 back to Node 5)
@@ -189,6 +190,13 @@ python3 -c "from store_db import connect; con = connect(); cur = con.cursor(); p
 ---
 
 ## Troubleshooting
+
+### Docker: "The container name '/n8n' is already in use"
+- Another n8n container is still there. Remove it, then run again:
+  ```bash
+  docker rm -f n8n
+  docker run -it --rm --name n8n -p 5678:5678 -v ~/.n8n:/home/node/.n8n n8nio/n8n
+  ```
 
 ### "Execute Command" node not available?
 - You need **n8n Self-Hosted** (not cloud)

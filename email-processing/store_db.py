@@ -31,7 +31,9 @@ def _column_missing(con, table, column):
 def _get_applied_versions(con):
     """Get list of migration versions that have been applied."""
     try:
-        rows = con.execute("SELECT version FROM schema_version ORDER BY version").fetchall()
+        rows = con.execute(
+            "SELECT version FROM schema_version ORDER BY version"
+        ).fetchall()
         return {row[0] for row in rows}
     except sqlite3.OperationalError:
         # schema_version table doesn't exist yet
@@ -57,19 +59,25 @@ def _get_migration_files():
 def _apply_migration(con, version, sql_file):
     """Apply a single migration file. Handles special cases for ALTER TABLE."""
     cur = con.cursor()
-    
+
     # Read SQL file
     with open(sql_file, "r") as f:
         sql_content = f.read()
-    
+
     # Special handling for migration 002 (needs column existence checks)
     # SQLite doesn't support IF NOT EXISTS for ALTER TABLE ADD COLUMN
     if version == 2:
         # Add columns only if they don't exist
         column_additions = [
-            ("urgency", "ALTER TABLE message ADD COLUMN urgency TEXT CHECK (urgency IN ('high','medium','low','none')) DEFAULT 'none'"),
+            (
+                "urgency",
+                "ALTER TABLE message ADD COLUMN urgency TEXT CHECK (urgency IN ('high','medium','low','none')) DEFAULT 'none'",
+            ),
             ("language", "ALTER TABLE message ADD COLUMN language TEXT"),
-            ("has_attachment", "ALTER TABLE message ADD COLUMN has_attachment INTEGER DEFAULT 0"),
+            (
+                "has_attachment",
+                "ALTER TABLE message ADD COLUMN has_attachment INTEGER DEFAULT 0",
+            ),
             ("thread_id", "ALTER TABLE message ADD COLUMN thread_id TEXT"),
             ("to_addresses", "ALTER TABLE message ADD COLUMN to_addresses TEXT"),
             ("cc_addresses", "ALTER TABLE message ADD COLUMN cc_addresses TEXT"),
@@ -78,33 +86,41 @@ def _apply_migration(con, version, sql_file):
         for col_name, alter_sql in column_additions:
             if _column_missing(con, "message", col_name):
                 cur.execute(alter_sql)
-        
+
         # Execute the rest of the migration (indexes, FTS, triggers)
         # The SQL file contains CREATE INDEX/CREATE VIRTUAL TABLE which are idempotent
         cur.executescript(sql_content)
-    
+
     # Special handling for migration 003 (needs column existence checks)
     elif version == 3:
         column_additions = [
-            ("mailbox_id", "ALTER TABLE raw_message ADD COLUMN mailbox_id TEXT DEFAULT 'me'"),
-            ("mailbox_type", "ALTER TABLE raw_message ADD COLUMN mailbox_type TEXT CHECK (mailbox_type IN ('personal','shared')) DEFAULT 'personal'"),
+            (
+                "mailbox_id",
+                "ALTER TABLE raw_message ADD COLUMN mailbox_id TEXT DEFAULT 'me'",
+            ),
+            (
+                "mailbox_type",
+                "ALTER TABLE raw_message ADD COLUMN mailbox_type TEXT CHECK (mailbox_type IN ('personal','shared')) DEFAULT 'personal'",
+            ),
         ]
         for col_name, alter_sql in column_additions:
             if _column_missing(con, "raw_message", col_name):
                 cur.execute(alter_sql)
-        
+
         # Execute the rest (indexes, mailbox_emails table - all use IF NOT EXISTS)
         cur.executescript(sql_content)
-    
+
     else:
         # Standard migration: execute SQL as-is (uses IF NOT EXISTS)
         cur.executescript(sql_content)
-    
+
     # Record migration in schema_version
-    description = os.path.basename(sql_file).replace(".sql", "").replace("_", " ").title()
+    description = (
+        os.path.basename(sql_file).replace(".sql", "").replace("_", " ").title()
+    )
     cur.execute(
         "INSERT INTO schema_version (version, description) VALUES (?, ?)",
-        (version, description)
+        (version, description),
     )
     con.commit()
 
@@ -113,7 +129,7 @@ def _run_migrations(con):
     """Run all unapplied migrations in order."""
     applied = _get_applied_versions(con)
     migrations = _get_migration_files()
-    
+
     for version, sql_file in migrations:
         if version not in applied:
             _apply_migration(con, version, sql_file)
@@ -128,7 +144,7 @@ def connect():
     con = sqlite3.connect(DB_PATH)
     # durability + concurrency
     con.execute("PRAGMA journal_mode=WAL;")
-    
+
     # Ensure schema_version table exists (migration 000)
     try:
         con.execute("SELECT 1 FROM schema_version LIMIT 1")
@@ -138,10 +154,10 @@ def connect():
         if os.path.exists(migration_000):
             with open(migration_000, "r") as f:
                 con.executescript(f.read())
-    
+
     # Run all migrations
     _run_migrations(con)
-    
+
     return con
 
 
@@ -325,6 +341,102 @@ def upsert_mailbox_email(con, row):
     con.commit()
 
 
+# ---------- Enterprise model helpers ----------
+def ensure_organization(con, org_id, name=None):
+    with closing(con.cursor()) as cur:
+        cur.execute(
+            """
+            INSERT INTO organization(org_id, name)
+            VALUES(?, COALESCE(?, 'Default Org'))
+            ON CONFLICT(org_id) DO UPDATE SET
+              name = COALESCE(excluded.name, organization.name)
+            """,
+            (org_id, name),
+        )
+    con.commit()
+
+
+def ensure_mailbox(
+    con, mailbox_id, org_id, mailbox_type, owner_user_id=None, name=None
+):
+    with closing(con.cursor()) as cur:
+        cur.execute(
+            """
+            INSERT INTO mailbox(mailbox_id, org_id, mailbox_type, owner_user_id, name)
+            VALUES(?, ?, ?, ?, ?)
+            ON CONFLICT(mailbox_id) DO UPDATE SET
+              org_id = excluded.org_id,
+              mailbox_type = excluded.mailbox_type,
+              owner_user_id = COALESCE(excluded.owner_user_id, mailbox.owner_user_id),
+              name = COALESCE(excluded.name, mailbox.name)
+            """,
+            (mailbox_id, org_id, mailbox_type, owner_user_id, name),
+        )
+    con.commit()
+
+
+def upsert_email(con, row):
+    """
+    row keys: email_id, org_id, provider_msg_id, thread_id, from_addr, to_addrs,
+              cc_addrs, subject, received_at, body_text, body_html,
+              raw_mime_ptr, content_hash
+    """
+    with closing(con.cursor()) as cur:
+        cur.execute(
+            """
+            INSERT INTO email(
+              email_id, org_id, provider_msg_id, thread_id,
+              from_addr, to_addrs, cc_addrs, subject, received_at,
+              body_text, body_html, raw_mime_ptr, content_hash
+            )
+            VALUES(
+              :email_id, :org_id, :provider_msg_id, :thread_id,
+              :from_addr, :to_addrs, :cc_addrs, :subject, :received_at,
+              :body_text, :body_html, :raw_mime_ptr, :content_hash
+            )
+            ON CONFLICT(email_id) DO UPDATE SET
+              org_id = excluded.org_id,
+              provider_msg_id = COALESCE(excluded.provider_msg_id, email.provider_msg_id),
+              thread_id = COALESCE(excluded.thread_id, email.thread_id),
+              from_addr = excluded.from_addr,
+              to_addrs = COALESCE(excluded.to_addrs, email.to_addrs),
+              cc_addrs = COALESCE(excluded.cc_addrs, email.cc_addrs),
+              subject = excluded.subject,
+              received_at = excluded.received_at,
+              body_text = COALESCE(excluded.body_text, email.body_text),
+              body_html = COALESCE(excluded.body_html, email.body_html),
+              raw_mime_ptr = COALESCE(excluded.raw_mime_ptr, email.raw_mime_ptr),
+              content_hash = COALESCE(excluded.content_hash, email.content_hash)
+            """,
+            row,
+        )
+    con.commit()
+
+
+def upsert_mailbox_email_map(con, row):
+    """
+    row keys: mailbox_id, email_id, delivered_at, labels_json, read_state, archived_state
+    """
+    with closing(con.cursor()) as cur:
+        cur.execute(
+            """
+            INSERT INTO mailbox_email(
+              mailbox_id, email_id, delivered_at, labels_json, read_state, archived_state
+            )
+            VALUES(
+              :mailbox_id, :email_id, :delivered_at, :labels_json, :read_state, :archived_state
+            )
+            ON CONFLICT(mailbox_id, email_id) DO UPDATE SET
+              delivered_at = COALESCE(excluded.delivered_at, mailbox_email.delivered_at),
+              labels_json = COALESCE(excluded.labels_json, mailbox_email.labels_json),
+              read_state = COALESCE(excluded.read_state, mailbox_email.read_state),
+              archived_state = COALESCE(excluded.archived_state, mailbox_email.archived_state)
+            """,
+            row,
+        )
+    con.commit()
+
+
 # ---------- Idea insert (returns rowid) ----------
 def insert_idea(con, row):
     """
@@ -369,6 +481,10 @@ def log_classification_event(
 # - upsert_raw_message(con, row: dict) -> None
 # - upsert_message(con, row: dict) -> None
 # - upsert_mailbox_email(con, row: dict) -> None
+# - ensure_organization(con, org_id, name=None) -> None
+# - ensure_mailbox(con, mailbox_id, org_id, mailbox_type, owner_user_id=None, name=None) -> None
+# - upsert_email(con, row: dict) -> None
+# - upsert_mailbox_email_map(con, row: dict) -> None
 # - upsert_attachment(con, row: dict) -> None
 # - insert_idea(con, row: dict) -> int (returns rowid)
 # - log_classification_event(con, message_id, category_auto, rule_name=None, confidence=None) -> None
