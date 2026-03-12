@@ -611,19 +611,38 @@ def apply_preferences(req: ApplyPreferencesRequest) -> Dict[str, Any]:
 @app.get("/config")
 def get_config(
     user_id: str = "user_1",
+    mailbox_id: Optional[str] = None,
     db_path: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Return saved taxonomy and preferences for the Taxonomy page."""
     _set_db_path(db_path)
     cfg = db_ops.get_user_config(user_id)
-    if cfg.get("status") != "ok":
-        return {
-            "status": "ok",
-            "classifications": {},
-            "preferences": {},
-        }
-    classifications = json.loads(cfg.get("classifications_json") or "{}")
-    preferences = json.loads(cfg.get("preferences_json") or "{}")
+    classifications: Dict[str, str] = {}
+    preferences: Dict[str, Any] = {}
+    if cfg.get("status") == "ok":
+        classifications = json.loads(cfg.get("classifications_json") or "{}")
+        preferences = json.loads(cfg.get("preferences_json") or "{}")
+
+    # Merge actual categories from DB so stale user_config doesn't hide them
+    con = store_db.connect()
+    if mailbox_id:
+        db_cats = con.execute(
+            """SELECT DISTINCT COALESCE(m.manual_category, m.category) AS cat
+               FROM message m
+               JOIN email e ON e.provider_msg_id = m.id
+               JOIN mailbox_email me ON me.email_id = e.email_id
+               WHERE me.mailbox_id = ? AND cat IS NOT NULL""",
+            (mailbox_id,),
+        ).fetchall()
+    else:
+        db_cats = con.execute(
+            "SELECT DISTINCT category FROM message WHERE category IS NOT NULL"
+        ).fetchall()
+    for row in db_cats:
+        cat = row[0]
+        if cat and cat not in classifications:
+            classifications[cat] = f"Emails classified as {cat}"
+
     taxonomy = [
         {"classification_id": k, "name": k, "description": v}
         for k, v in classifications.items()
@@ -641,18 +660,23 @@ def get_config_labels(
     user_id: str = "user_1",
     db_path: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Return taxonomy labels for manual labeling (Evaluation page). Uses user's applied taxonomy."""
+    """Return taxonomy labels — merges user config with categories actually present in the DB."""
     _set_db_path(db_path)
+    labels: set = set()
+    # From user config
     cfg = db_ops.get_user_config(user_id)
-    if cfg.get("status") != "ok":
-        return {"status": "ok", "labels": ["other", "internal", "client", "research"]}
-    classifications = json.loads(cfg.get("classifications_json") or "{}")
-    labels = (
-        list(classifications.keys())
-        if classifications
-        else ["other", "internal", "client", "research"]
-    )
-    return {"status": "ok", "labels": labels}
+    if cfg.get("status") == "ok":
+        classifications = json.loads(cfg.get("classifications_json") or "{}")
+        labels.update(classifications.keys())
+    # From actual data (covers consolidated categories not yet in user_config)
+    con = store_db.connect()
+    rows = con.execute(
+        "SELECT DISTINCT category FROM message WHERE category IS NOT NULL"
+    ).fetchall()
+    labels.update(row[0] for row in rows if row[0])
+    if not labels:
+        labels = {"Other", "Internal", "Client", "Research"}
+    return {"status": "ok", "labels": sorted(labels)}
 
 
 class MailboxMapRequest(BaseModel):
