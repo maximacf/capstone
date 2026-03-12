@@ -101,6 +101,7 @@ export default function Evaluation() {
 
   const allLabelOptions = [...new Set([
     ...labelOptions,
+    ...labelingItems.map((i) => i.auto_category).filter(Boolean) as string[],
     ...labelingItems.map((i) => i.manual_category).filter(Boolean) as string[]
   ])].sort()
 
