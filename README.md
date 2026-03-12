@@ -1,4 +1,8 @@
-# Capstone — Adaptive Email Intelligence
+# Mailgine — Adaptive Email Intelligence
+
+**Architecture:** See [ARCHITECTURE.md](ARCHITECTURE.md) for system design, data flow, and folder hierarchy.
+
+**Backend (source of truth):** `email-processing-just-code/` — FastAPI + PostgreSQL. This is the canonical implementation for the thesis methodology.
 
 ## Local setup
 
