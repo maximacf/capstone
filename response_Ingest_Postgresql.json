@@ -1,0 +1,33 @@
+{
+  "status": "ok",
+  "ingest": {
+    "status": "success",
+    "dry_run": false,
+    "mailbox_id": "me",
+    "mailbox_type": "personal",
+    "ingested_count": 82,
+    "first_received_dt": "2025-10-15T07:18:31Z",
+    "last_received_dt": "2026-02-16T06:47:26Z"
+  },
+  "parse": {
+    "status": "success",
+    "dry_run": false,
+    "mailbox_id": "me",
+    "processed_count": 82,
+    "category_counts": {
+      "Internal": 5,
+      "Research": 54,
+      "Trades": 11,
+      "Client": 10,
+      "Market": 2
+    },
+    "urgency_counts": {
+      "high": 22,
+      "none": 58,
+      "medium": 2
+    },
+    "source_counts": {
+      "rules": 82
+    }
+  }
+}

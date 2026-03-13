@@ -1,0 +1,52 @@
+{
+  "status": "ok",
+  "sampled_count": 50,
+  "proposal_id": null,
+  "proposed_taxonomy": [
+    {
+      "classification_id": "security_alerts",
+      "name": "Security Alerts",
+      "description": "Emails related to security measures, unauthorized access alerts, and account verification for user accounts."
+    },
+    {
+      "classification_id": "account_verifications",
+      "name": "Account Verifications",
+      "description": "Emails requesting confirmation or verification of user accounts, often including codes or links to verify email addresses."
+    },
+    {
+      "classification_id": "trade_ideas",
+      "name": "Trade Ideas",
+      "description": "Emails containing proposed trading strategies, market analyses, and financial instruments recommendations."
+    },
+    {
+      "classification_id": "financial_updates",
+      "name": "Financial Updates",
+      "description": "Emails providing updates on financial markets, including rates, economic data, and market trends."
+    },
+    {
+      "classification_id": "business_notifications",
+      "name": "Business Notifications",
+      "description": "Emails from service providers or business platforms regarding subscriptions, licenses, or service renewals."
+    },
+    {
+      "classification_id": "newsletters",
+      "name": "Newsletters",
+      "description": "Subscriptions or briefings summarizing the latest news, analyses, and opinions, typically from news organizations."
+    },
+    {
+      "classification_id": "educational_resources",
+      "name": "Educational Resources",
+      "description": "Emails offering educational content, courses, or workshops relevant to professional development and skills enhancement."
+    },
+    {
+      "classification_id": "internal_communcations",
+      "name": "Internal Communications",
+      "description": "Emails intended for internal team communication including project updates, client discussions, and research findings."
+    },
+    {
+      "classification_id": "other",
+      "name": "Other",
+      "description": "Catch-all for items that do not fit other categories"
+    }
+  ]
+}

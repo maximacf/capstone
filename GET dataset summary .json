@@ -1,0 +1,74 @@
+{
+  "status": "ok",
+  "totals": {
+    "raw_messages": 82,
+    "canonical_emails": 82,
+    "mailbox_mappings": 82
+  },
+  "mailbox_totals": [
+    {
+      "mailbox_id": "me",
+      "count": 82
+    }
+  ],
+  "date_coverage": {
+    "message_received_dt": {
+      "min": "2025-10-15T07:18:31Z",
+      "max": "2026-02-16T06:47:26Z"
+    },
+    "email_received_at": {
+      "min": "2025-10-15T07:18:31Z",
+      "max": "2026-02-16T06:47:26Z"
+    }
+  },
+  "language_distribution": [],
+  "attachment_total": 0,
+  "category_distribution": {
+    "message_category": [
+      {
+        "category": "Market",
+        "count": 2
+      },
+      {
+        "category": "Trades",
+        "count": 11
+      },
+      {
+        "category": "Client",
+        "count": 10
+      },
+      {
+        "category": "Research",
+        "count": 54
+      },
+      {
+        "category": "Internal",
+        "count": 5
+      }
+    ],
+    "classification_event": [
+      {
+        "category": "Market",
+        "count": 2
+      },
+      {
+        "category": "Trades",
+        "count": 11
+      },
+      {
+        "category": "Client",
+        "count": 10
+      },
+      {
+        "category": "Research",
+        "count": 54
+      },
+      {
+        "category": "Internal",
+        "count": 5
+      }
+    ]
+  },
+  "action_coverage": [],
+  "artifact_coverage": []
+}

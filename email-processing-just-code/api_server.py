@@ -631,7 +631,7 @@ def get_config(
                FROM message m
                JOIN email e ON e.provider_msg_id = m.id
                JOIN mailbox_email me ON me.email_id = e.email_id
-               WHERE me.mailbox_id = ? AND cat IS NOT NULL""",
+               WHERE me.mailbox_id = ? AND COALESCE(m.manual_category, m.category) IS NOT NULL""",
             (mailbox_id,),
         ).fetchall()
     else:
@@ -1444,14 +1444,19 @@ def pipeline_automate(req: AutomateRequest) -> Dict[str, Any]:
 
     processed: List[Dict[str, Any]] = []
     for item in candidates:
-        class_prompt = (
-            "Return JSON only. Output schema: "
-            '{"label":"...", "confidence":0.0-1.0}. '
-            "Pick label from this list if possible."
+        label_descriptions = "\n".join(
+            f"- {k}: {v}" for k, v in classifications.items()
         )
-        label_list = ", ".join(classifications.keys()) or "General"
+        class_prompt = (
+            "You classify emails into exactly one category. "
+            'Return JSON only: {"label":"...", "confidence":0.0-1.0}. '
+            "Pick the single best category based on the PRIMARY purpose of the email. "
+            "Research = only formal research reports, analyst notes, or market analysis publications. "
+            "Short replies, questions, scheduling, or forwarded messages are NOT Research. "
+            "If unsure, prefer General or Other over Research."
+        )
         user_prompt = (
-            f"Labels: {label_list}\n"
+            f"Categories:\n{label_descriptions}\n\n"
             f"From: {item.get('from_addr')}\n"
             f"Subject: {item.get('subject')}\n"
             f"Body: {item.get('body_text')}"

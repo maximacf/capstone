@@ -1,6 +1,6 @@
 # Just-Code API (FastAPI)
 
-This is a no-n8n, API-first orchestration layer for the thesis model.
+This is the API-first backend for Mailgine (thesis model).
 
 ## Install
 
@@ -11,6 +11,23 @@ python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 pip install -r email-processing-just-code/requirements_api.txt
+```
+
+## Database (PostgreSQL + SQLAlchemy ORM)
+
+The app uses **PostgreSQL only**. Set `DATABASE_URL` before running:
+
+```bash
+export DATABASE_URL="postgresql://user:pass@localhost:5432/maildb"
+uvicorn api_server:app --app-dir email-processing-just-code --reload --port 8001
+```
+
+**Migrations:** Use Alembic for schema changes:
+
+```bash
+cd email-processing-just-code
+alembic revision --autogenerate -m "description"
+alembic upgrade head
 ```
 
 ## Run
@@ -33,6 +50,13 @@ uvicorn api_server:app --app-dir email-processing-just-code --reload --port 8001
 
 All endpoints accept `db_path` if you want to override the default DB file.
 
+## Minimal Demo UI (Streamlit)
+
+```
+cd "/Users/ifc/SynologyDrive/Year 5/Thesis/Data"
+API_BASE="http://127.0.0.1:8001" streamlit run email-processing-just-code/ui_dashboard.py
+```
+
 ## Taxonomy Discovery + Apply Flow (Per User)
 
 This is the recommended flow for every new user. Discovery is exploratory and
@@ -43,7 +67,7 @@ read-only. Apply writes the user-approved taxonomy to `classifications_json`.
 ```
 curl -X POST http://127.0.0.1:8001/taxonomy/discover \
   -H "Content-Type: application/json" \
-  -d '{"mailbox_id":"me","sample_limit":50,"window_days":90,"db_path":"/Users/ifc/SynologyDrive/Year 5/Thesis/Data/email-processing/data/mail.db"}'
+  -d '{"mailbox_id":"me","sample_limit":50,"window_days":90}'
 ```
 
 Response contains `proposed_taxonomy` (5–8 categories + catch-all). The client
@@ -65,8 +89,7 @@ curl -X POST http://127.0.0.1:8001/taxonomy/apply \
       {"classification_id":"business_development","name":"Business Development & Introductions","description":"..."},
       {"classification_id":"marketing_updates","name":"Marketing & Product Updates","description":"..."},
       {"classification_id":"other","name":"Other / Noise","description":"..."}
-    ],
-    "db_path":"/Users/ifc/SynologyDrive/Year 5/Thesis/Data/email-processing/data/mail.db"
+    ]
   }'
 ```
 

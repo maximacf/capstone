@@ -85,7 +85,8 @@ MATERIALS = re.compile(
     r"\b(attached|attachment|slides|deck|pptx|pdf|chartbook|appendix)\b", re.I
 )
 RESEARCH = re.compile(
-    r"\b(research|note|preview|outlook|publication|strategy|house view)\b", re.I
+    r"\b(research report|research note|market research|industry analysis|publication|house view|analyst report)\b",
+    re.I,
 )
 
 URG_HIGH = re.compile(r"\b(urgent|asap|eod|today|now|immediately|deadline)\b", re.I)
@@ -193,8 +194,17 @@ class LLMEmailClassifier:
                 {
                     "role": "system",
                     "content": (
-                        "You are an assistant that classifies investment-bank emails into categories. "
-                        f"Categories: {', '.join(CANONICAL_LABELS)}. "
+                        "You classify emails into exactly one category. "
+                        "Categories:\n"
+                        "- Research: formal research reports, analyst notes, market analysis publications\n"
+                        "- Financial: transactions, contracts, deals, trades, pricing, buyouts\n"
+                        "- General: scheduling, general updates, FYI, greetings, courtesy replies\n"
+                        "- Internal: company-internal operations, HR, IT, approvals, processes\n"
+                        "- External: communication with outside parties, clients, vendors\n"
+                        "- Materials: documents, attachments, reference files, slide decks\n"
+                        "- Other: personal, spam, or anything not fitting above categories\n"
+                        "Short replies, questions, or forwarded messages are NOT Research. "
+                        "If unsure, prefer General or Other over Research. "
                         'Respond with JSON: {"label":"...","rationale":"..."}.'
                     ),
                 },
