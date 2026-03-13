@@ -638,9 +638,10 @@ def get_config(
         db_cats = con.execute(
             "SELECT DISTINCT category FROM message WHERE category IS NOT NULL"
         ).fetchall()
+    existing_lower = {k.lower() for k in classifications}
     for row in db_cats:
         cat = row[0]
-        if cat and cat not in classifications:
+        if cat and cat.lower() not in existing_lower:
             classifications[cat] = f"Emails classified as {cat}"
 
     taxonomy = [

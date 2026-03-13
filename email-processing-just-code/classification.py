@@ -22,32 +22,30 @@ from bs4 import BeautifulSoup
 LOGGER = logging.getLogger(__name__)
 
 CANONICAL_LABELS = [
-    "Trades",
-    "Client",
-    "Internal",
-    "Market",
+    "Financial",
+    "General",
+    "External",
     "Materials",
-    "Research",
     "Other",
 ]
 
 CATEGORY_ALIASES = {
-    "trade idea": "Trades",
-    "trade": "Trades",
-    "trade_ideas": "Trades",
-    "client": "Client",
-    "internal": "Internal",
-    "internal_queries": "Internal",
-    "internal_operations": "Internal",
-    "update": "Market",
-    "market": "Market",
-    "materials": "Materials",
-    "research": "Research",
-    "project_and_research": "Research",
-    "other": "Other",
+    # Legacy 7-category → consolidated 5-category
+    "trades": "Financial",
+    "trade": "Financial",
+    "trade idea": "Financial",
+    "trade_ideas": "Financial",
+    "market": "Financial",
+    "update": "Financial",
+    "client": "External",
+    "internal": "General",
+    "internal_queries": "General",
+    "internal_operations": "General",
+    "research": "General",
+    "project_and_research": "General",
     "vendor_management": "Other",
-    "regulatory_and_external": "Other",
-    # Consolidated categories (Enron)
+    "regulatory_and_external": "External",
+    # Consolidated Enron aliases
     "financial": "Financial",
     "financial_transactions": "Financial",
     "financial_and_contracts": "Financial",
@@ -60,10 +58,12 @@ CATEGORY_ALIASES = {
     "meeting_and_scheduling": "General",
     "external": "External",
     "external_communications": "External",
-    # Consolidated categories (me)
-    "security": "Security",
-    "account_security_events": "Security",
-    "service_subscription_notifications": "Security",
+    "materials": "Materials",
+    "other": "Other",
+    # Personal mailbox aliases
+    "security": "Other",
+    "account_security_events": "Other",
+    "service_subscription_notifications": "Other",
 }
 
 TRADE = re.compile(
@@ -143,23 +143,23 @@ class RuleBasedClassifier:
         )
 
         if TRADE.search(subject) or (TRADE.search(body) and TENOR.search(body)):
-            return ClassificationResult("Trades", 0.92, "rules", "trade_keywords")
+            return ClassificationResult("Financial", 0.92, "rules", "trade_keywords")
         if CLIENT.search(subject) or CLIENT.search(body):
-            return ClassificationResult("Client", 0.8, "rules", "client_language")
+            return ClassificationResult("External", 0.8, "rules", "client_language")
         if (
             domain.endswith(".internal")
             or INTERNAL.search(subject)
             or INTERNAL.search(body)
         ):
-            return ClassificationResult("Internal", 0.75, "rules", "internal_terms")
+            return ClassificationResult("General", 0.75, "rules", "internal_terms")
         if MARKET.search(subject) or MARKET.search(body):
-            return ClassificationResult("Market", 0.7, "rules", "market_update")
+            return ClassificationResult("Financial", 0.7, "rules", "market_update")
         if MATERIALS.search(subject) or MATERIALS.search(body):
             return ClassificationResult(
                 "Materials", 0.65, "rules", "materials_reference"
             )
         if RESEARCH.search(subject) or RESEARCH.search(body):
-            return ClassificationResult("Research", 0.6, "rules", "research_terms")
+            return ClassificationResult("General", 0.6, "rules", "research_terms")
         return ClassificationResult("Other", 0.3, "rules", "fallback_no_match")
 
 
@@ -196,15 +196,12 @@ class LLMEmailClassifier:
                     "content": (
                         "You classify emails into exactly one category. "
                         "Categories:\n"
-                        "- Research: formal research reports, analyst notes, market analysis publications\n"
-                        "- Financial: transactions, contracts, deals, trades, pricing, buyouts\n"
-                        "- General: scheduling, general updates, FYI, greetings, courtesy replies\n"
-                        "- Internal: company-internal operations, HR, IT, approvals, processes\n"
-                        "- External: communication with outside parties, clients, vendors\n"
-                        "- Materials: documents, attachments, reference files, slide decks\n"
-                        "- Other: personal, spam, or anything not fitting above categories\n"
-                        "Short replies, questions, or forwarded messages are NOT Research. "
-                        "If unsure, prefer General or Other over Research. "
+                        "- Financial: transactions, contracts, deals, trades, pricing, market updates, financial analysis\n"
+                        "- General: scheduling, general updates, FYI, greetings, internal operations, research, courtesy replies\n"
+                        "- External: communication with outside parties, clients, vendors, regulatory correspondence\n"
+                        "- Materials: documents, attachments, reference files, slide decks, reports\n"
+                        "- Other: personal, spam, newsletters, or anything not fitting above categories\n"
+                        "If unsure, prefer General or Other. "
                         'Respond with JSON: {"label":"...","rationale":"..."}.'
                     ),
                 },

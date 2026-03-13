@@ -8,12 +8,25 @@ import {
 } from '../api/client'
 import type { InboxItem, Artifact, EmailDetail } from '../types/api'
 
+function CategoryBadge({ category }: { category: string | null }) {
+  const cat = category || '–'
+  const cls = `category category--${cat}`
+  const icons: Record<string, string> = {
+    Financial: '💰',
+    General: '📧',
+    External: '🌐',
+    Materials: '📎',
+    Other: '📁',
+  }
+  return <span className={cls}>{icons[cat] || '📁'} {cat}</span>
+}
+
 function Badges({ item }: { item: InboxItem }) {
   const badges: string[] = []
-  if (item.has_summary) badges.push('Summary')
-  if (item.has_draft_reply) badges.push('Draft')
-  if (item.has_translation) badges.push('Translation')
-  if (item.has_extraction) badges.push('Extracted')
+  if (item.has_summary) badges.push('📝 Summary')
+  if (item.has_draft_reply) badges.push('✉️ Draft')
+  if (item.has_translation) badges.push('🌍 Translation')
+  if (item.has_extraction) badges.push('🔍 Extracted')
   if (badges.length === 0) return <span className="empty">–</span>
   return (
     <>
@@ -60,10 +73,10 @@ function ExtractedFields({ raw }: { raw: string | Record<string, unknown> }) {
 
 function ArtifactBlock({ art }: { art: Artifact }) {
   const typeLabel: Record<string, string> = {
-    summary: 'Summary',
-    extracted_fields: 'Extracted fields',
-    draft_reply: 'Draft reply',
-    translation: 'Translation',
+    summary: '📝 Summary',
+    extracted_fields: '🔍 Extracted Fields',
+    draft_reply: '✉️ Draft Reply',
+    translation: '🌍 Translation',
   }
 
   const renderBody = () => {
@@ -86,7 +99,7 @@ function ArtifactBlock({ art }: { art: Artifact }) {
   return (
     <div className={`artifact artifact-${art.artifact_type}`}>
       <div className="artifact-type">{typeLabel[art.artifact_type] ?? art.artifact_type}</div>
-      <div className="artifact-meta">• {art.run_status}</div>
+      <div className="artifact-meta">{art.run_status === 'success' ? '✓ completed' : art.run_status}</div>
       {renderBody()}
     </div>
   )
@@ -179,7 +192,7 @@ export default function Dashboard() {
     })
       .then((r) => {
         const ok = r.processed?.filter((p) => p.status === 'success').length ?? 0
-        setLastAction(`Automation complete: ${ok} actions run`)
+        setLastAction(`Automation complete — ${ok} actions processed`)
         refreshInbox()
         if (selected) {
           getArtifacts(mailboxId, selected.email_id).then((a) => setArtifacts(a.items))
@@ -192,17 +205,17 @@ export default function Dashboard() {
   return (
     <div className="dashboard">
       <header className="page-header">
-        <h1>Inbox</h1>
+        <h1>📬 Inbox</h1>
         <div className="actions">
           <label>
             Mailbox
             <select value={mailboxId} onChange={(e) => setMailboxId(e.target.value)}>
-              <option value="me">me</option>
-              <option value="research_team">research_team</option>
-              <option value="enron_import">Enron Import</option>
+              <option value="me">My Inbox</option>
+              <option value="research_team">Research Team</option>
+              <option value="enron_import">Enron Dataset</option>
             </select>
           </label>
-          <label title="Number of emails to show in the inbox list">
+          <label title="Number of emails to show">
             Show
             <select value={limit} onChange={(e) => setLimit(Number(e.target.value))}>
               <option value={25}>25</option>
@@ -215,25 +228,25 @@ export default function Dashboard() {
           <button
             onClick={handleIngest}
             disabled={ingestLoading}
-            className="btn btn-primary"
-            title={`Ingest ${ingestPages} page(s) × ${ingestTop} from Graph API`}
+            className="btn btn-secondary"
+            title={`Fetch ${ingestPages} page(s) × ${ingestTop} from email provider`}
           >
-            {ingestLoading ? 'Ingesting…' : 'Ingest emails'}
+            {ingestLoading ? 'Fetching…' : '📥 Fetch emails'}
           </button>
           <button
             onClick={handleAutomate}
             disabled={automateLoading}
-            className="btn btn-secondary"
-            title={`Run automation on up to ${automateLimit} emails`}
+            className="btn btn-primary"
+            title={`Classify and process up to ${automateLimit} emails`}
           >
-            {automateLoading ? 'Running…' : 'Run automation'}
+            {automateLoading ? 'Processing…' : '⚡ Run automation'}
           </button>
         </div>
       </header>
       {lastAction && <div className="toast success">{lastAction}</div>}
       {error && <div className="error">{error}</div>}
       {loading ? (
-        <p>Loading…</p>
+        <p className="muted">Loading inbox…</p>
       ) : (
         <div className="inbox-layout">
           <section className="inbox-list">
@@ -242,15 +255,15 @@ export default function Dashboard() {
                 <tr>
                   <th>Subject</th>
                   <th>From</th>
-                  <th>Received</th>
+                  <th>Date</th>
                   <th>Category</th>
-                  <th>Badges</th>
+                  <th>AI Actions</th>
                 </tr>
               </thead>
               <tbody>
                 {items.length === 0 ? (
                   <tr>
-                    <td colSpan={5} className="empty">No emails in this mailbox. Ingest or switch mailbox.</td>
+                    <td colSpan={5} className="empty">No emails in this mailbox. Fetch emails or switch mailbox.</td>
                   </tr>
                 ) : items.map((row) => (
                   <tr
@@ -264,7 +277,7 @@ export default function Dashboard() {
                     </td>
                     <td>{row.from_addr || '–'}</td>
                     <td>{row.received_at ? new Date(row.received_at).toLocaleDateString() : '–'}</td>
-                    <td><span className="category">{row.category || '–'}</span></td>
+                    <td><CategoryBadge category={row.category} /></td>
                     <td><Badges item={row} /></td>
                   </tr>
                 ))}
@@ -274,20 +287,28 @@ export default function Dashboard() {
           <section className="email-detail">
             {selected ? (
               <>
-                <h3>Email details</h3>
+                <h3>Email Details</h3>
                 {emailDetail && (
                   <div className="email-meta">
                     <p><strong>Subject:</strong> {emailDetail.subject || '(none)'}</p>
                     <p><strong>From:</strong> {emailDetail.from_addr || '–'}</p>
-                    <p><strong>Category:</strong> <span className="category">{emailDetail.category || '–'}</span></p>
+                    <p><strong>Category:</strong> <CategoryBadge category={emailDetail.category} /></p>
                     {emailDetail.classification_history?.length ? (
-                      <p><strong>Classification history:</strong></p>
+                      <p style={{ fontSize: '0.78rem', color: '#94a3b8' }}>
+                        <strong>Classification history:</strong>{' '}
+                        {emailDetail.classification_history.slice(0, 3).map((h, i) => (
+                          <span key={i}>
+                            {h.category}
+                            {h.confidence != null && (
+                              <span className={`confidence-badge ${h.confidence >= 0.85 ? 'confidence-high' : h.confidence >= 0.6 ? 'confidence-medium' : 'confidence-low'}`} style={{ marginLeft: '0.3rem' }}>
+                                {(h.confidence * 100).toFixed(0)}%
+                              </span>
+                            )}
+                            {i < (emailDetail.classification_history?.length ?? 0) - 1 ? ' → ' : ''}
+                          </span>
+                        ))}
+                      </p>
                     ) : null}
-                    {emailDetail.classification_history?.slice(0, 3).map((h, i) => (
-                      <small key={i}>
-                        {h.category} ({h.rule_name ?? 'rules'}) @ {h.created_ts}
-                      </small>
-                    ))}
                   </div>
                 )}
                 {emailDetail?.body_text && (
@@ -296,10 +317,10 @@ export default function Dashboard() {
                     <div className="body-text">{emailDetail.body_text}</div>
                   </div>
                 )}
-                <h4>Artifacts (summaries, translations, etc.)</h4>
+                <h4 style={{ marginTop: '1.25rem' }}>AI-Generated Insights</h4>
                 {artifacts.length === 0 ? (
                   <p className="empty">
-                    No artifacts for this email. Run automation, then pick an email with a Summary or Extracted badge in the list.
+                    No insights yet. Click "Run automation" to generate summaries, extractions, and more.
                   </p>
                 ) : (
                   artifacts.map((art) => (
@@ -308,7 +329,7 @@ export default function Dashboard() {
                 )}
               </>
             ) : (
-              <p className="empty">Select an email</p>
+              <p className="empty">Select an email to view details and AI insights</p>
             )}
           </section>
         </div>

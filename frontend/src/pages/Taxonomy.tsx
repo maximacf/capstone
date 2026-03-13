@@ -88,7 +88,7 @@ export default function Taxonomy() {
   const handleCompile = () => {
     const text = naturalLang.trim()
     if (!text) {
-      setError('Describe your preferences')
+      setError('Describe your preferences in plain English first.')
       return
     }
     setCompileLoading(true)
@@ -96,7 +96,7 @@ export default function Taxonomy() {
     configCompilePreferences({ natural_language: text })
       .then((r) => {
         setPreferences(JSON.stringify(r.preferences || {}, null, 2))
-        setSuccess('Converted to JSON. Review and click Apply if ready.')
+        setSuccess('Converted to settings. Review below and click Save when ready.')
       })
       .catch((e) => setError(e.message))
       .finally(() => setCompileLoading(false))
@@ -117,30 +117,36 @@ export default function Taxonomy() {
       org_id: 'org_1',
       preferences: prefs,
     })
-      .then(() => setSuccess('Preferences applied'))
+      .then(() => setSuccess('Preferences saved successfully!'))
       .catch((e) => setError(e.message))
       .finally(() => setPrefLoading(false))
   }
 
+  const catIcons: Record<string, string> = {
+    financial: '💰', general: '📧', external: '🌐', materials: '📎', other: '📁',
+  }
+
   return (
     <div className="taxonomy-page">
-      <h1>Taxonomy & Config</h1>
+      <h1>⚙️ Settings</h1>
       <p className="lead">
-        Discover email categories from your inbox, apply a taxonomy, and set automation preferences.
+        Configure how Mailgine understands and processes your emails.
       </p>
       {error && <div className="error">{error}</div>}
       {success && <div className="toast success">{success}</div>}
 
       <section className="card">
-        <h2>1. Discover taxonomy</h2>
-        <p>Propose categories from sampled emails (MECE principle).</p>
+        <h2>📂 Step 1 — Discover Email Categories</h2>
+        <p className="muted">
+          Let the AI scan your inbox and suggest meaningful categories for organizing your emails.
+        </p>
         <div className="form-row">
           <label>
             Mailbox
             <select value={mailboxId} onChange={(e) => setMailboxId(e.target.value)}>
-              <option value="me">me</option>
-              <option value="research_team">research_team</option>
-              <option value="enron_import">enron_import</option>
+              <option value="me">My Inbox</option>
+              <option value="research_team">Research Team</option>
+              <option value="enron_import">Enron Dataset</option>
             </select>
           </label>
           <button
@@ -148,23 +154,24 @@ export default function Taxonomy() {
             disabled={discoverLoading}
             className="btn btn-primary"
           >
-            {discoverLoading ? 'Discovering…' : 'Discover'}
+            {discoverLoading ? 'Analyzing…' : '🔍 Discover categories'}
           </button>
         </div>
       </section>
 
       <section className="card">
-        <h2>2. Review & apply taxonomy</h2>
+        <h2>✅ Step 2 — Review & Apply Categories</h2>
         {configLoading ? (
-          <p className="muted">Loading saved config…</p>
+          <p className="muted">Loading saved settings…</p>
         ) : (
           <>
             {savedTaxonomy.length > 0 && (
               <>
-                <p className="muted">Current taxonomy (saved) — used by automation until you change it:</p>
+                <p className="muted">Your current categories — used for all automation:</p>
                 <ul className="taxonomy-list">
                   {savedTaxonomy.map((t) => (
                     <li key={t.classification_id}>
+                      <span style={{ marginRight: '0.4rem' }}>{catIcons[t.classification_id.toLowerCase()] || '📁'}</span>
                       <code>{t.classification_id}</code> — {t.description || t.name}
                     </li>
                   ))}
@@ -173,10 +180,13 @@ export default function Taxonomy() {
             )}
             {proposedTaxonomy && proposedTaxonomy.length > 0 && (
               <>
-                <p className="muted" style={{ marginTop: '1rem' }}>Proposed (from Discover) — click Apply to replace your saved taxonomy:</p>
+                <p className="muted" style={{ marginTop: '1rem' }}>
+                  New suggestions from AI — click Apply to replace your current categories:
+                </p>
                 <ul className="taxonomy-list">
                   {proposedTaxonomy.map((t) => (
                     <li key={t.classification_id}>
+                      <span style={{ marginRight: '0.4rem' }}>{catIcons[t.classification_id.toLowerCase()] || '📁'}</span>
                       <code>{t.classification_id}</code> — {t.description || t.name}
                     </li>
                   ))}
@@ -187,23 +197,25 @@ export default function Taxonomy() {
                   className="btn btn-primary"
                   style={{ marginTop: '0.5rem' }}
                 >
-                  {applyLoading ? 'Applying…' : 'Apply proposed taxonomy'}
+                  {applyLoading ? 'Applying…' : '✅ Apply suggested categories'}
                 </button>
               </>
             )}
             {savedTaxonomy.length === 0 && !proposedTaxonomy && (
-              <p className="empty">Run Discover first to propose categories.</p>
+              <p className="empty">No categories yet. Click "Discover categories" above to get started.</p>
             )}
           </>
         )}
       </section>
 
       <section className="card">
-        <h2>3. Set automation preferences</h2>
-        <p>Describe in plain English (e.g. &quot;summarize in max 5 bullet points for all emails&quot;) or edit JSON directly.</p>
+        <h2>🎛️ Step 3 — Automation Preferences</h2>
+        <p className="muted">
+          Tell the AI what to do with your emails. Describe it in plain English and we'll convert it to settings.
+        </p>
         <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', marginBottom: '1rem' }}>
           <textarea
-            placeholder="e.g. Summarize all emails in max 5 bullet points, client-friendly style. Extract entities from client emails."
+            placeholder="e.g. Summarize all emails in max 5 bullet points. Extract key dates and amounts from financial emails. Draft replies for external emails."
             value={naturalLang}
             onChange={(e) => setNaturalLang(e.target.value)}
             rows={3}
@@ -214,10 +226,12 @@ export default function Taxonomy() {
             disabled={compileLoading}
             className="btn btn-primary"
           >
-            {compileLoading ? 'Converting…' : 'Convert to JSON'}
+            {compileLoading ? 'Converting…' : '🔄 Convert to settings'}
           </button>
         </div>
-        <p className="muted" style={{ marginTop: '0.5rem' }}>Or edit JSON directly:</p>
+        <p className="muted" style={{ marginTop: '0.5rem' }}>
+          Advanced: edit the JSON settings directly
+        </p>
         <textarea
           value={preferences}
           onChange={(e) => setPreferences(e.target.value)}
@@ -229,7 +243,7 @@ export default function Taxonomy() {
           disabled={prefLoading}
           className="btn btn-secondary"
         >
-          {prefLoading ? 'Applying…' : 'Apply preferences'}
+          {prefLoading ? 'Saving…' : '💾 Save preferences'}
         </button>
       </section>
     </div>

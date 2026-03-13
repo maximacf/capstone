@@ -22,6 +22,11 @@ type LabelItem = {
   manual_category: string | null
 }
 
+const catIcons: Record<string, string> = {
+  Financial: '💰', General: '📧', External: '🌐', Materials: '📎', Other: '📁',
+  financial: '💰', general: '📧', external: '🌐', materials: '📎', other: '📁',
+}
+
 export default function Evaluation() {
   const [data, setData] = useState<DatasetSummary | null>(null)
   const [metrics, setMetrics] = useState<ClassificationMetrics | null>(null)
@@ -87,7 +92,7 @@ export default function Evaluation() {
           : prev.map((i) => i.email_id === emailId ? { ...i, manual_category: manualCategory } : i)
       )
       if (!wasAlreadyLabeled) setLabeledCount((c) => c + 1)
-      setLabelToast(`✓ ${manualCategory}`)
+      setLabelToast(`✓ Labeled as ${manualCategory}`)
       setTimeout(() => setLabelToast(null), 1500)
       refreshMetrics()
     } catch (e) {
@@ -105,7 +110,6 @@ export default function Evaluation() {
     ...labelingItems.map((i) => i.manual_category).filter(Boolean) as string[]
   ])].sort()
 
-  // Group items by auto_category for grouped display
   const grouped = labelingItems.reduce<Record<string, LabelItem[]>>((acc, item) => {
     const key = item.auto_category || 'unknown'
     if (!acc[key]) acc[key] = []
@@ -113,7 +117,7 @@ export default function Evaluation() {
     return acc
   }, {})
 
-  if (loading) return <p>Loading…</p>
+  if (loading) return <p className="muted" style={{ padding: '2rem' }}>Loading evaluation data…</p>
   if (error) return <div className="error">{error}</div>
   if (!data) return null
 
@@ -122,17 +126,16 @@ export default function Evaluation() {
 
   return (
     <div className="evaluation-page">
-      <h1>Evaluation</h1>
+      <h1>📊 Evaluation</h1>
       <p className="lead">
-        Manual labeling to create ground truth, then classification quality metrics (F1, precision, recall).
+        Label emails to build ground truth, then measure classification quality with precision, recall, and F1 scores.
       </p>
 
-      {/* Manual labeling */}
       <section className="card">
-        <h2>1. Manual labeling (ground truth)</h2>
+        <h2>🏷️ Manual Labeling</h2>
         <p className="muted">
-          Label each email with the correct category. Click <strong>Confirm</strong> if the LLM got it right,
-          or pick a different label from the dropdown. Emails are stratified — up to 10 per category.
+          Review each email's AI-assigned category. Click <strong>Confirm</strong> if correct,
+          or pick the right label from the dropdown.
         </p>
 
         <div className="labeling-controls">
@@ -150,31 +153,32 @@ export default function Evaluation() {
           <label className="checkbox-label">
             <input type="checkbox" checked={showUnlabeledOnly}
               onChange={(e) => setShowUnlabeledOnly(e.target.checked)} />
-            Unlabeled only
+            Show unlabeled only
           </label>
           <button className="btn btn-secondary" onClick={loadSamples} disabled={labelingLoading}>
-            {labelingLoading ? 'Loading…' : 'Refresh sample'}
+            {labelingLoading ? 'Loading…' : '🔄 Refresh'}
           </button>
         </div>
 
-        {/* Progress bar */}
         <div className="label-progress">
           <div className="label-progress-bar" style={{ width: `${progressPct}%` }} />
-          <span className="label-progress-text">{labeledCount} / {totalEmails} labeled ({progressPct}%)</span>
         </div>
+        <span className="label-progress-text">{labeledCount} / {totalEmails} labeled ({progressPct}%)</span>
 
         {labelToast && <div className="toast success label-toast">{labelToast}</div>}
 
-        {labelingLoading ? <p>Loading…</p> : labelingItems.length === 0 ? (
+        {labelingLoading ? <p className="muted">Loading emails…</p> : labelingItems.length === 0 ? (
           <p className="empty">
-            {showUnlabeledOnly ? 'All emails labeled! Uncheck "Unlabeled only" to review.' : 'No emails found.'}
+            {showUnlabeledOnly ? 'All emails labeled! Uncheck "Show unlabeled only" to review.' : 'No emails found.'}
           </p>
         ) : (
           Object.entries(grouped).sort(([a], [b]) => a.localeCompare(b)).map(([cat, items]) => (
             <div key={cat} className="label-group">
               <div className="label-group-header">
-                <span className="category">{cat}</span>
-                <span className="label-group-count">{items.length} emails</span>
+                <span className={`category category--${cat}`}>
+                  {catIcons[cat] || '📁'} {cat}
+                </span>
+                <span className="label-group-count">{items.length} email{items.length !== 1 ? 's' : ''}</span>
               </div>
               {items.map((item) => (
                 <div key={item.email_id} className={`labeling-row ${item.manual_category ? 'labeled' : ''}`}>
@@ -183,7 +187,7 @@ export default function Evaluation() {
                     <span className="from">{item.from_addr}</span>
                     <button type="button" className="btn-expand"
                       onClick={() => setExpandedId((p) => p === item.email_id ? null : item.email_id)}>
-                      {expandedId === item.email_id ? '▲ Hide' : '▼ Body'}
+                      {expandedId === item.email_id ? '▲ Hide' : '▼ Preview'}
                     </button>
                   </div>
                   <div className="labeling-actions">
@@ -191,7 +195,7 @@ export default function Evaluation() {
                       ? <span className="manual-badge">✓ {item.manual_category}</span>
                       : item.auto_category
                         ? <button className="btn btn-confirm" onClick={() => handleConfirmAuto(item)}>
-                            Confirm: {item.auto_category}
+                            ✓ Confirm: {item.auto_category}
                           </button>
                         : <span className="muted">No auto-label</span>
                     }
@@ -199,7 +203,7 @@ export default function Evaluation() {
                       value={item.manual_category ?? ''}
                       onChange={(e) => { if (e.target.value) handleSetLabel(item.email_id, e.target.value) }}
                     >
-                      <option value="">{item.manual_category ? 'Correct…' : 'Wrong label…'}</option>
+                      <option value="">{item.manual_category ? 'Change…' : 'Correct to…'}</option>
                       {allLabelOptions.map((c) => (
                         <option key={c} value={c}>{c}</option>
                       ))}
@@ -208,7 +212,7 @@ export default function Evaluation() {
                   {expandedId === item.email_id && (
                     <div className="labeling-body">
                       {item.body_text ? <div className="body-text">{item.body_text}</div>
-                        : <p className="muted">No body text</p>}
+                        : <p className="muted">No body text available</p>}
                     </div>
                   )}
                 </div>
@@ -218,35 +222,37 @@ export default function Evaluation() {
         )}
       </section>
 
-      {/* Classification metrics */}
       <section className="card">
-        <h2>2. Classification quality (F1, precision, recall)</h2>
-        <p className="muted">Requires manual labels. Based on {metrics?.labeled_count ?? 0} labeled emails.</p>
+        <h2>📈 Classification Quality</h2>
+        <p className="muted">
+          How accurate is the AI? Based on {metrics?.labeled_count ?? 0} manually labeled emails.
+        </p>
         <button
           type="button"
           className="btn btn-secondary"
           onClick={refreshMetrics}
           disabled={metricsLoading}
+          style={{ marginBottom: '1rem' }}
         >
-          {metricsLoading ? 'Loading…' : 'Refresh metrics'}
+          {metricsLoading ? 'Calculating…' : '🔄 Refresh metrics'}
         </button>
         {metrics && metrics.labeled_count > 0 ? (
           <div className="metrics-block">
             <div className="stats-row">
               <div className="stat">
-                <span className="stat-value">{metrics.macro.precision.toFixed(3)}</span>
-                <span className="stat-label">Macro precision</span>
+                <span className="stat-value">{(metrics.macro.precision * 100).toFixed(1)}%</span>
+                <span className="stat-label">Precision</span>
               </div>
               <div className="stat">
-                <span className="stat-value">{metrics.macro.recall.toFixed(3)}</span>
-                <span className="stat-label">Macro recall</span>
+                <span className="stat-value">{(metrics.macro.recall * 100).toFixed(1)}%</span>
+                <span className="stat-label">Recall</span>
               </div>
               <div className="stat">
-                <span className="stat-value">{metrics.macro.f1.toFixed(3)}</span>
-                <span className="stat-label">Macro F1</span>
+                <span className="stat-value">{(metrics.macro.f1 * 100).toFixed(1)}%</span>
+                <span className="stat-label">F1 Score</span>
               </div>
             </div>
-            <h3>Per-class metrics</h3>
+            <h3>Per-Category Breakdown</h3>
             <table className="runs-table">
               <thead>
                 <tr>
@@ -259,16 +265,20 @@ export default function Evaluation() {
               <tbody>
                 {Object.entries(metrics.per_class).map(([cat, m]) => (
                   <tr key={cat}>
-                    <td><span className="category">{cat}</span></td>
-                    <td>{m.precision.toFixed(3)}</td>
-                    <td>{m.recall.toFixed(3)}</td>
-                    <td>{m.f1.toFixed(3)}</td>
+                    <td>
+                      <span className={`category category--${cat}`}>
+                        {catIcons[cat] || '📁'} {cat}
+                      </span>
+                    </td>
+                    <td>{(m.precision * 100).toFixed(1)}%</td>
+                    <td>{(m.recall * 100).toFixed(1)}%</td>
+                    <td>{(m.f1 * 100).toFixed(1)}%</td>
                   </tr>
                 ))}
               </tbody>
             </table>
-            <h3>Confusion matrix</h3>
-            <p className="muted">Rows = actual (manual), Cols = predicted (auto)</p>
+            <h3>Confusion Matrix</h3>
+            <p className="muted">Rows = your label, Columns = AI prediction</p>
             <table className="confusion-matrix">
               <thead>
                 <tr>
@@ -298,13 +308,12 @@ export default function Evaluation() {
             </table>
           </div>
         ) : (
-          <p className="empty">Label at least a few emails above to see metrics.</p>
+          <p className="empty">Label some emails above to see how well the AI is performing.</p>
         )}
       </section>
 
-      {/* Existing sections */}
       <section className="card">
-        <h2>Corpus size</h2>
+        <h2>📦 Dataset Overview</h2>
         <div className="stats-row">
           <div className="stat">
             <span className="stat-value">{totals?.raw_messages ?? 0}</span>
@@ -312,72 +321,79 @@ export default function Evaluation() {
           </div>
           <div className="stat">
             <span className="stat-value">{totals?.canonical_emails ?? 0}</span>
-            <span className="stat-label">Canonical emails</span>
+            <span className="stat-label">Unique emails</span>
           </div>
           <div className="stat">
             <span className="stat-value">{totals?.mailbox_mappings ?? 0}</span>
-            <span className="stat-label">Mailbox mappings</span>
+            <span className="stat-label">Mailbox links</span>
           </div>
         </div>
+
+        {mailbox_totals && mailbox_totals.length > 0 && (
+          <>
+            <h3 style={{ margin: '1rem 0 0.5rem' }}>Mailboxes</h3>
+            <div className="stats-row">
+              {mailbox_totals.map((m) => (
+                <div key={m.mailbox_id} className="stat">
+                  <span className="stat-value">{m.count}</span>
+                  <span className="stat-label">{m.mailbox_id}</span>
+                </div>
+              ))}
+            </div>
+          </>
+        )}
+
+        {date_coverage && (
+          <p className="muted" style={{ marginTop: '0.5rem' }}>
+            Date range: {date_coverage?.email_received_at?.min ?? '–'} to {date_coverage?.email_received_at?.max ?? '–'}
+          </p>
+        )}
       </section>
 
-      <section className="card">
-        <h2>Mailbox totals</h2>
-        <ul>
-          {mailbox_totals?.map((m) => (
-            <li key={m.mailbox_id}>
-              <strong>{m.mailbox_id}</strong>: {m.count} emails
-            </li>
-          ))}
-          {(!mailbox_totals || mailbox_totals.length === 0) && <li className="empty">No mailboxes</li>}
-        </ul>
-      </section>
-
-      <section className="card">
-        <h2>Date coverage</h2>
-        <p>
-          Messages: {date_coverage?.message_received_dt?.min ?? '–'} to {date_coverage?.message_received_dt?.max ?? '–'}
-        </p>
-        <p>
-          Emails: {date_coverage?.email_received_at?.min ?? '–'} to {date_coverage?.email_received_at?.max ?? '–'}
-        </p>
-      </section>
-
-      <section className="card">
-        <h2>Category distribution</h2>
-        <ul>
-          {category_distribution?.message_category?.map((c) => (
-            <li key={c.category}>
-              {c.category}: {c.count}
-            </li>
-          ))}
-          {(!category_distribution?.message_category?.length) && <li className="empty">No data</li>}
-        </ul>
-      </section>
-
-      <section className="card">
-        <h2>Automation consistency (action coverage)</h2>
-        <ul>
-          {action_coverage?.map((a) => (
-            <li key={a.action_type}>
-              <code>{a.action_type}</code>: {a.count}
-            </li>
-          ))}
-          {(!action_coverage?.length) && <li className="empty">No automation runs yet</li>}
-        </ul>
-      </section>
-
-      <section className="card">
-        <h2>Artifact coverage</h2>
-        <ul>
-          {artifact_coverage?.map((a) => (
-            <li key={a.artifact_type}>
-              <code>{a.artifact_type}</code>: {a.count}
-            </li>
-          ))}
-          {(!artifact_coverage?.length) && <li className="empty">No artifacts yet</li>}
-        </ul>
-      </section>
+      {(category_distribution?.message_category?.length || action_coverage?.length || artifact_coverage?.length) && (
+        <section className="card">
+          <h2>📊 Coverage Summary</h2>
+          {category_distribution?.message_category?.length ? (
+            <>
+              <h3 style={{ margin: '0 0 0.5rem' }}>Categories</h3>
+              <div className="stats-row">
+                {category_distribution.message_category.map((c) => (
+                  <div key={c.category} className="stat">
+                    <span className="stat-value">{c.count}</span>
+                    <span className="stat-label">{catIcons[c.category] || '📁'} {c.category}</span>
+                  </div>
+                ))}
+              </div>
+            </>
+          ) : null}
+          {action_coverage?.length ? (
+            <>
+              <h3 style={{ margin: '1rem 0 0.5rem' }}>Automation Actions</h3>
+              <div className="stats-row">
+                {action_coverage.map((a) => (
+                  <div key={a.action_type} className="stat">
+                    <span className="stat-value">{a.count}</span>
+                    <span className="stat-label">{a.action_type}</span>
+                  </div>
+                ))}
+              </div>
+            </>
+          ) : null}
+          {artifact_coverage?.length ? (
+            <>
+              <h3 style={{ margin: '1rem 0 0.5rem' }}>Generated Artifacts</h3>
+              <div className="stats-row">
+                {artifact_coverage.map((a) => (
+                  <div key={a.artifact_type} className="stat">
+                    <span className="stat-value">{a.count}</span>
+                    <span className="stat-label">{a.artifact_type}</span>
+                  </div>
+                ))}
+              </div>
+            </>
+          ) : null}
+        </section>
+      )}
     </div>
   )
 }
