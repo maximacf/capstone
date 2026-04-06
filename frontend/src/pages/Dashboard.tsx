@@ -1,14 +1,17 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import {
   getInbox,
   getEmailDetail,
   getArtifacts,
   pipelineIngest,
   pipelineAutomate,
+  listMailboxes,
+  authConnectStart,
+  authConnectComplete,
 } from '../api/client'
 import type { InboxItem, Artifact, EmailDetail } from '../types/api'
 
-function CategoryBadge({ category }: { category: string | null }) {
+function CategoryBadge({ category }: { category: string | null | undefined }) {
   const cat = category || '–'
   const cls = `category category--${cat}`
   const icons: Record<string, string> = {
@@ -105,8 +108,142 @@ function ArtifactBlock({ art }: { art: Artifact }) {
   )
 }
 
+/* ── Connect Mailbox Modal ─────────────────────────────────── */
+function ConnectMailboxModal({
+  onClose,
+  onConnected,
+}: {
+  onClose: () => void
+  onConnected: (mailboxId: string) => void
+}) {
+  const [email, setEmail] = useState('')
+  const [step, setStep] = useState<'input' | 'device_flow' | 'waiting' | 'done' | 'error'>('input')
+  const [deviceInfo, setDeviceInfo] = useState<{ user_code: string; verification_uri: string; session_id: string } | null>(null)
+  const [errorMsg, setErrorMsg] = useState('')
+
+  const handleStart = async () => {
+    if (!email.trim()) return
+    setStep('device_flow')
+    try {
+      const res = await authConnectStart(email.trim())
+      if (res.status === 'already_authenticated') {
+        // Token already cached, just trigger ingest
+        onConnected(email.trim())
+        return
+      }
+      setDeviceInfo({
+        user_code: res.user_code!,
+        verification_uri: res.verification_uri!,
+        session_id: res.session_id!,
+      })
+    } catch (e) {
+      setErrorMsg(e instanceof Error ? e.message : 'Failed to start authentication')
+      setStep('error')
+    }
+  }
+
+  const handleComplete = async () => {
+    if (!deviceInfo) return
+    setStep('waiting')
+    try {
+      await authConnectComplete(deviceInfo.session_id)
+      setStep('done')
+      onConnected(email.trim())
+    } catch (e) {
+      setErrorMsg(e instanceof Error ? e.message : 'Authentication failed')
+      setStep('error')
+    }
+  }
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-header">
+          <h3>Connect Mailbox</h3>
+          <button className="modal-close" onClick={onClose}>&times;</button>
+        </div>
+        <div className="modal-body">
+          {step === 'input' && (
+            <>
+              <p style={{ marginBottom: '0.75rem', color: '#64748b', fontSize: '0.85rem' }}>
+                Connect any Microsoft 365 / Outlook mailbox. You will be asked to authenticate via your browser.
+              </p>
+              <label style={{ display: 'block', marginBottom: '0.5rem', fontWeight: 500 }}>
+                Email address
+              </label>
+              <input
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                placeholder="user@outlook.com"
+                className="modal-input"
+                onKeyDown={(e) => e.key === 'Enter' && handleStart()}
+                autoFocus
+              />
+              <button className="btn btn-primary" style={{ marginTop: '1rem', width: '100%' }} onClick={handleStart} disabled={!email.trim()}>
+                Connect
+              </button>
+            </>
+          )}
+          {step === 'device_flow' && deviceInfo && (
+            <>
+              <div className="device-flow-box">
+                <p style={{ marginBottom: '0.5rem' }}>To authenticate, open this URL in your browser:</p>
+                <a href={deviceInfo.verification_uri} target="_blank" rel="noopener noreferrer" className="device-flow-link">
+                  {deviceInfo.verification_uri}
+                </a>
+                <p style={{ margin: '0.75rem 0 0.25rem' }}>And enter this code:</p>
+                <div className="device-code">{deviceInfo.user_code}</div>
+              </div>
+              <button className="btn btn-primary" style={{ marginTop: '1rem', width: '100%' }} onClick={handleComplete}>
+                I've authenticated — continue
+              </button>
+            </>
+          )}
+          {step === 'waiting' && (
+            <div style={{ textAlign: 'center', padding: '2rem 0' }}>
+              <div className="spinner" />
+              <p style={{ marginTop: '1rem', color: '#64748b' }}>Waiting for authentication to complete...</p>
+            </div>
+          )}
+          {step === 'done' && (
+            <div style={{ textAlign: 'center', padding: '2rem 0' }}>
+              <p style={{ fontSize: '1.5rem' }}>✅</p>
+              <p style={{ fontWeight: 600 }}>Mailbox connected!</p>
+              <p style={{ color: '#64748b', fontSize: '0.85rem' }}>You can now fetch emails from {email}.</p>
+            </div>
+          )}
+          {step === 'error' && (
+            <div style={{ textAlign: 'center', padding: '2rem 0' }}>
+              <p style={{ fontSize: '1.5rem' }}>❌</p>
+              <p style={{ fontWeight: 600, color: '#ef4444' }}>Connection failed</p>
+              <p style={{ color: '#64748b', fontSize: '0.85rem' }}>{errorMsg}</p>
+              <button className="btn btn-secondary" style={{ marginTop: '1rem' }} onClick={() => { setStep('input'); setErrorMsg('') }}>
+                Try again
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+/* ── Sort control ─────────────────────────────────── */
+const SORT_OPTIONS = [
+  { value: 'date_desc', label: 'Date (newest)' },
+  { value: 'date_asc', label: 'Date (oldest)' },
+  { value: 'sender_asc', label: 'Sender (A–Z)' },
+  { value: 'sender_desc', label: 'Sender (Z–A)' },
+  { value: 'subject_asc', label: 'Subject (A–Z)' },
+  { value: 'subject_desc', label: 'Subject (Z–A)' },
+]
+
+const CATEGORIES = ['Financial', 'General', 'External', 'Materials', 'Other']
+
 export default function Dashboard() {
   const [mailboxId, setMailboxId] = useState('me')
+  const [mailboxes, setMailboxes] = useState<Array<{ mailbox_id: string; name: string; email_count: number }>>([])
   const [limit, setLimit] = useState(25)
   const [items, setItems] = useState<InboxItem[]>([])
   const [selected, setSelected] = useState<InboxItem | null>(null)
@@ -117,13 +254,28 @@ export default function Dashboard() {
   const [ingestLoading, setIngestLoading] = useState(false)
   const [automateLoading, setAutomateLoading] = useState(false)
   const [lastAction, setLastAction] = useState<string | null>(null)
-  const [ingestPages, setIngestPages] = useState(1)
-  const [ingestTop, setIngestTop] = useState(20)
-  const [automateLimit, setAutomateLimit] = useState(25)
+  const [ingestPages] = useState(1)
+  const [ingestTop] = useState(20)
+  const [automateLimit] = useState(25)
+  const [showConnectModal, setShowConnectModal] = useState(false)
 
-  const refreshInbox = () => {
+  // Search, sort, filter state
+  const [search, setSearch] = useState('')
+  const [searchInput, setSearchInput] = useState('')
+  const [sort, setSort] = useState('date_desc')
+  const [categoryFilter, setCategoryFilter] = useState('')
+
+  const refreshMailboxes = useCallback(() => {
+    listMailboxes()
+      .then((r) => setMailboxes(r.mailboxes))
+      .catch(() => {})
+  }, [])
+
+  useEffect(() => { refreshMailboxes() }, [refreshMailboxes])
+
+  const refreshInbox = useCallback(() => {
     setLoading(true)
-    getInbox(mailboxId, limit)
+    getInbox(mailboxId, limit, 0, false, search || undefined, categoryFilter || undefined, sort)
       .then((r) => {
         setItems(r.items)
         setSelected((prev) => {
@@ -137,11 +289,9 @@ export default function Dashboard() {
       })
       .catch((e) => setError(e.message))
       .finally(() => setLoading(false))
-  }
+  }, [mailboxId, limit, search, categoryFilter, sort])
 
-  useEffect(() => {
-    refreshInbox()
-  }, [mailboxId, limit])
+  useEffect(() => { refreshInbox() }, [refreshInbox])
 
   useEffect(() => {
     if (!selected || !mailboxId) {
@@ -202,6 +352,17 @@ export default function Dashboard() {
       .finally(() => setAutomateLoading(false))
   }
 
+  const handleSearchSubmit = (e: React.FormEvent) => {
+    e.preventDefault()
+    setSearch(searchInput)
+  }
+
+  const handleConnected = (newMailboxId: string) => {
+    refreshMailboxes()
+    setMailboxId(newMailboxId)
+    setShowConnectModal(false)
+  }
+
   return (
     <div className="dashboard">
       <header className="page-header">
@@ -210,11 +371,28 @@ export default function Dashboard() {
           <label>
             Mailbox
             <select value={mailboxId} onChange={(e) => setMailboxId(e.target.value)}>
-              <option value="me">My Inbox</option>
-              <option value="research_team">Research Team</option>
-              <option value="enron_import">Enron Dataset</option>
+              {/* Static fallbacks if API hasn't loaded yet */}
+              {mailboxes.length === 0 ? (
+                <>
+                  <option value="me">My Inbox</option>
+                  <option value="enron_import">Enron Dataset</option>
+                </>
+              ) : (
+                mailboxes.map((m) => (
+                  <option key={m.mailbox_id} value={m.mailbox_id}>
+                    {m.name} ({m.email_count})
+                  </option>
+                ))
+              )}
             </select>
           </label>
+          <button
+            onClick={() => setShowConnectModal(true)}
+            className="btn btn-outline"
+            title="Connect a new Outlook / Microsoft 365 mailbox"
+          >
+            + Connect
+          </button>
           <label title="Number of emails to show">
             Show
             <select value={limit} onChange={(e) => setLimit(Number(e.target.value))}>
@@ -243,6 +421,45 @@ export default function Dashboard() {
           </button>
         </div>
       </header>
+
+      {/* Search & filter bar */}
+      <div className="inbox-toolbar">
+        <form onSubmit={handleSearchSubmit} className="search-form">
+          <input
+            type="text"
+            value={searchInput}
+            onChange={(e) => setSearchInput(e.target.value)}
+            placeholder="Search by subject or sender..."
+            className="search-input"
+          />
+          <button type="submit" className="btn btn-sm">Search</button>
+          {search && (
+            <button type="button" className="btn btn-sm btn-ghost" onClick={() => { setSearch(''); setSearchInput('') }}>
+              Clear
+            </button>
+          )}
+        </form>
+        <div className="toolbar-controls">
+          <label>
+            Category
+            <select value={categoryFilter} onChange={(e) => setCategoryFilter(e.target.value)}>
+              <option value="">All</option>
+              {CATEGORIES.map((c) => (
+                <option key={c} value={c}>{c}</option>
+              ))}
+            </select>
+          </label>
+          <label>
+            Sort
+            <select value={sort} onChange={(e) => setSort(e.target.value)}>
+              {SORT_OPTIONS.map((o) => (
+                <option key={o.value} value={o.value}>{o.label}</option>
+              ))}
+            </select>
+          </label>
+        </div>
+      </div>
+
       {lastAction && <div className="toast success">{lastAction}</div>}
       {error && <div className="error">{error}</div>}
       {loading ? (
@@ -263,7 +480,9 @@ export default function Dashboard() {
               <tbody>
                 {items.length === 0 ? (
                   <tr>
-                    <td colSpan={5} className="empty">No emails in this mailbox. Fetch emails or switch mailbox.</td>
+                    <td colSpan={5} className="empty">
+                      {search || categoryFilter ? 'No emails match your search/filter.' : 'No emails in this mailbox. Fetch emails or switch mailbox.'}
+                    </td>
                   </tr>
                 ) : items.map((row) => (
                   <tr
@@ -333,6 +552,13 @@ export default function Dashboard() {
             )}
           </section>
         </div>
+      )}
+
+      {showConnectModal && (
+        <ConnectMailboxModal
+          onClose={() => setShowConnectModal(false)}
+          onConnected={handleConnected}
+        />
       )}
     </div>
   )

@@ -63,10 +63,13 @@ export default function Taxonomy() {
       .finally(() => setDiscoverLoading(false))
   }
 
-  const handleApplyTaxonomy = () => {
-    const toApply = proposedTaxonomy && proposedTaxonomy.length > 0 ? proposedTaxonomy : savedTaxonomy
-    if (toApply.length === 0) {
-      setError('Discover taxonomy first, or you already have a saved taxonomy.')
+  const handleApplyTaxonomy = (source?: 'proposed' | 'saved') => {
+    const toApply = source === 'saved' ? savedTaxonomy
+      : source === 'proposed' ? (proposedTaxonomy || [])
+      : (proposedTaxonomy && proposedTaxonomy.length > 0 ? proposedTaxonomy : savedTaxonomy)
+    const filtered = toApply.filter((t) => t.classification_id.trim() !== '')
+    if (filtered.length === 0) {
+      setError('Add at least one category with a name.')
       return
     }
     setApplyLoading(true)
@@ -74,12 +77,12 @@ export default function Taxonomy() {
     taxonomyApply({
       user_id: 'user_1',
       org_id: 'org_1',
-      proposed_taxonomy: toApply,
+      proposed_taxonomy: filtered,
     })
       .then(() => {
-        setSavedTaxonomy(toApply)
+        setSavedTaxonomy(filtered)
         setProposedTaxonomy(null)
-        setSuccess(`Applied ${toApply.length} categories`)
+        setSuccess(`Applied ${filtered.length} categories`)
       })
       .catch((e) => setError(e.message))
       .finally(() => setApplyLoading(false))
@@ -169,36 +172,114 @@ export default function Taxonomy() {
               <>
                 <p className="muted">Your current categories — used for all automation:</p>
                 <ul className="taxonomy-list">
-                  {savedTaxonomy.map((t) => (
-                    <li key={t.classification_id}>
-                      <span style={{ marginRight: '0.4rem' }}>{catIcons[t.classification_id.toLowerCase()] || '📁'}</span>
-                      <code>{t.classification_id}</code> — {t.description || t.name}
+                  {savedTaxonomy.map((t, idx) => (
+                    <li key={t.classification_id + idx} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                      <span>{catIcons[t.classification_id.toLowerCase()] || '📁'}</span>
+                      <input
+                        value={t.classification_id}
+                        onChange={(e) => {
+                          const updated = [...savedTaxonomy]
+                          updated[idx] = { ...updated[idx], classification_id: e.target.value }
+                          setSavedTaxonomy(updated)
+                        }}
+                        style={{ width: '160px', fontFamily: 'monospace', fontSize: '0.85rem', padding: '0.25rem 0.4rem', border: '1px solid #d0d5dd', borderRadius: '6px' }}
+                        title="Category name"
+                      />
+                      <span style={{ color: '#999' }}>—</span>
+                      <input
+                        value={t.description || t.name}
+                        onChange={(e) => {
+                          const updated = [...savedTaxonomy]
+                          updated[idx] = { ...updated[idx], description: e.target.value, name: e.target.value }
+                          setSavedTaxonomy(updated)
+                        }}
+                        style={{ flex: 1, fontSize: '0.85rem', padding: '0.25rem 0.4rem', border: '1px solid #d0d5dd', borderRadius: '6px' }}
+                        title="Description"
+                      />
+                      <button
+                        onClick={() => setSavedTaxonomy(savedTaxonomy.filter((_, i) => i !== idx))}
+                        title="Remove category"
+                        style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '1.1rem', color: '#e74c3c', padding: '0.2rem' }}
+                      >
+                        ✕
+                      </button>
                     </li>
                   ))}
                 </ul>
+                <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.5rem' }}>
+                  <button
+                    onClick={() => setSavedTaxonomy([...savedTaxonomy, { classification_id: '', name: '', description: '' }])}
+                    className="btn btn-secondary"
+                    style={{ fontSize: '0.85rem' }}
+                  >
+                    ➕ Add category
+                  </button>
+                  <button
+                    onClick={() => handleApplyTaxonomy('saved')}
+                    disabled={applyLoading}
+                    className="btn btn-primary"
+                  >
+                    {applyLoading ? 'Saving…' : '💾 Save changes'}
+                  </button>
+                </div>
               </>
             )}
             {proposedTaxonomy && proposedTaxonomy.length > 0 && (
               <>
                 <p className="muted" style={{ marginTop: '1rem' }}>
-                  New suggestions from AI — click Apply to replace your current categories:
+                  New suggestions from AI — edit, remove, or add categories before applying:
                 </p>
                 <ul className="taxonomy-list">
-                  {proposedTaxonomy.map((t) => (
-                    <li key={t.classification_id}>
-                      <span style={{ marginRight: '0.4rem' }}>{catIcons[t.classification_id.toLowerCase()] || '📁'}</span>
-                      <code>{t.classification_id}</code> — {t.description || t.name}
+                  {proposedTaxonomy.map((t, idx) => (
+                    <li key={t.classification_id} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                      <span>{catIcons[t.classification_id.toLowerCase()] || '📁'}</span>
+                      <input
+                        value={t.classification_id}
+                        onChange={(e) => {
+                          const updated = [...proposedTaxonomy]
+                          updated[idx] = { ...updated[idx], classification_id: e.target.value }
+                          setProposedTaxonomy(updated)
+                        }}
+                        style={{ width: '160px', fontFamily: 'monospace', fontSize: '0.85rem', padding: '0.25rem 0.4rem', border: '1px solid #d0d5dd', borderRadius: '6px' }}
+                        title="Category name"
+                      />
+                      <span style={{ color: '#999' }}>—</span>
+                      <input
+                        value={t.description || t.name}
+                        onChange={(e) => {
+                          const updated = [...proposedTaxonomy]
+                          updated[idx] = { ...updated[idx], description: e.target.value, name: e.target.value }
+                          setProposedTaxonomy(updated)
+                        }}
+                        style={{ flex: 1, fontSize: '0.85rem', padding: '0.25rem 0.4rem', border: '1px solid #d0d5dd', borderRadius: '6px' }}
+                        title="Description"
+                      />
+                      <button
+                        onClick={() => setProposedTaxonomy(proposedTaxonomy.filter((_, i) => i !== idx))}
+                        title="Remove category"
+                        style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '1.1rem', color: '#e74c3c', padding: '0.2rem' }}
+                      >
+                        ✕
+                      </button>
                     </li>
                   ))}
                 </ul>
-                <button
-                  onClick={handleApplyTaxonomy}
-                  disabled={applyLoading}
-                  className="btn btn-primary"
-                  style={{ marginTop: '0.5rem' }}
-                >
-                  {applyLoading ? 'Applying…' : '✅ Apply suggested categories'}
-                </button>
+                <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.5rem' }}>
+                  <button
+                    onClick={() => setProposedTaxonomy([...proposedTaxonomy, { classification_id: '', name: '', description: '' }])}
+                    className="btn btn-secondary"
+                    style={{ fontSize: '0.85rem' }}
+                  >
+                    ➕ Add category
+                  </button>
+                  <button
+                    onClick={() => handleApplyTaxonomy('proposed')}
+                    disabled={applyLoading}
+                    className="btn btn-primary"
+                  >
+                    {applyLoading ? 'Applying…' : '✅ Apply categories'}
+                  </button>
+                </div>
               </>
             )}
             {savedTaxonomy.length === 0 && !proposedTaxonomy && (

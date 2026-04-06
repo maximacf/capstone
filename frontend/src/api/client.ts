@@ -36,15 +36,45 @@ async function patch<T>(path: string, body: unknown): Promise<T> {
   return res.json()
 }
 
+// Mailboxes
+export async function listMailboxes() {
+  return get<{ status: string; mailboxes: Array<{ mailbox_id: string; mailbox_type: string; name: string; email_count: number }> }>('/mailboxes')
+}
+
+export async function authConnectStart(mailboxId: string, mailboxType = 'personal') {
+  return post<{
+    status: string
+    session_id?: string
+    user_code?: string
+    verification_uri?: string
+    message?: string
+    mailbox_id?: string
+    expires_in?: number
+  }>('/auth/connect/start', { mailbox_id: mailboxId, mailbox_type: mailboxType })
+}
+
+export async function authConnectComplete(sessionId: string) {
+  return post<{ status: string; mailbox_id: string; message: string }>(
+    '/auth/connect/complete',
+    { session_id: sessionId }
+  )
+}
+
 // Inbox & email
 export async function getInbox(
   mailboxId: string,
   limit = 50,
   offset = 0,
-  includeBody = false
+  includeBody = false,
+  search?: string,
+  category?: string,
+  sort?: string,
 ) {
   const params: Record<string, string | number> = { limit, offset }
   if (includeBody) params.include_body = 'true'
+  if (search) params.search = search
+  if (category) params.category = category
+  if (sort) params.sort = sort
   return get<import('../types/api').InboxResponse>(
     `/mailbox/${mailboxId}/inbox`,
     params

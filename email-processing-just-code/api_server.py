@@ -2,9 +2,11 @@ import json
 import os
 import re
 import sys
+import threading
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
+import msal
 import requests
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
@@ -37,7 +39,11 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
-app = FastAPI(title="Mailgine API")
+app = FastAPI(
+    title="Mailgine API",
+    description="REST API for Mailgine: email ingestion, hybrid classification, automation, and evaluation.",
+    version="6.1.0",
+)
 
 app.add_middleware(
     CORSMiddleware,
@@ -57,6 +63,158 @@ app.add_middleware(
 def root():
     """Redirect root to API docs."""
     return RedirectResponse(url="/docs")
+
+
+# ── Device-flow auth for connecting new mailboxes ──────────────────
+_pending_flows: Dict[str, Any] = {}  # session_id → {flow, app, cache}
+
+
+class ConnectStartRequest(BaseModel):
+    mailbox_id: str = Field(
+        description="Email address to connect, e.g. user@outlook.com"
+    )
+    mailbox_type: str = Field(default="personal")
+
+
+class ConnectCompleteRequest(BaseModel):
+    session_id: str
+
+
+@app.post(
+    "/auth/connect/start",
+    summary="Start mailbox connection",
+    description="Initiates OAuth device flow. Returns a user_code and verification_uri for the user to authenticate in their browser.",
+)
+def auth_connect_start(req: ConnectStartRequest) -> Dict[str, Any]:
+    cache = ingest_raw.load_cache()
+    msal_app = msal.PublicClientApplication(
+        ingest_raw.CLIENT_ID,
+        authority=ingest_raw.AUTHORITY,
+        token_cache=cache,
+    )
+    # Check if we already have a valid token
+    accounts = msal_app.get_accounts()
+    if accounts:
+        result = msal_app.acquire_token_silent(ingest_raw.SCOPES, account=accounts[0])
+        if result and "access_token" in result:
+            ingest_raw.save_cache(cache)
+            return {
+                "status": "already_authenticated",
+                "mailbox_id": req.mailbox_id,
+                "message": "Token already cached — ready to fetch emails.",
+            }
+
+    flow = msal_app.initiate_device_flow(scopes=ingest_raw.SCOPES)
+    if "user_code" not in flow:
+        raise HTTPException(
+            status_code=500, detail=f"Failed to create device flow: {flow}"
+        )
+
+    import uuid
+
+    session_id = str(uuid.uuid4())
+    _pending_flows[session_id] = {
+        "flow": flow,
+        "app": msal_app,
+        "cache": cache,
+        "mailbox_id": req.mailbox_id,
+        "mailbox_type": req.mailbox_type,
+    }
+
+    return {
+        "status": "pending",
+        "session_id": session_id,
+        "user_code": flow["user_code"],
+        "verification_uri": flow.get(
+            "verification_uri", "https://microsoft.com/devicelogin"
+        ),
+        "message": flow.get("message", ""),
+        "expires_in": flow.get("expires_in", 900),
+    }
+
+
+@app.post(
+    "/auth/connect/complete",
+    summary="Complete mailbox connection",
+    description="Blocks until the user completes device-flow authentication, then ingests the first batch of emails.",
+)
+def auth_connect_complete(req: ConnectCompleteRequest) -> Dict[str, Any]:
+    session = _pending_flows.pop(req.session_id, None)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found or expired")
+
+    msal_app = session["app"]
+    flow = session["flow"]
+    cache = session["cache"]
+    mailbox_id = session["mailbox_id"]
+    mailbox_type = session["mailbox_type"]
+
+    result = msal_app.acquire_token_by_device_flow(flow)
+    ingest_raw.save_cache(cache)
+
+    if "access_token" not in result:
+        raise HTTPException(
+            status_code=401,
+            detail=f"Authentication failed: {result.get('error_description', 'unknown')}",
+        )
+
+    # Ensure mailbox + org exist in DB
+    con = store_db.connect()
+    org_id = ingest_raw.ORG_ID
+    store_db.ensure_organization(con, org_id)
+    mtype = "shared_team" if mailbox_type == "shared" else "personal"
+    store_db.ensure_mailbox(
+        con, mailbox_id=mailbox_id, org_id=org_id, mailbox_type=mtype, name=mailbox_id
+    )
+
+    return {
+        "status": "connected",
+        "mailbox_id": mailbox_id,
+        "message": f"Successfully authenticated. Mailbox '{mailbox_id}' is ready.",
+    }
+
+
+@app.get(
+    "/mailboxes",
+    summary="List connected mailboxes",
+    description="Returns all mailboxes that have been connected and have emails.",
+)
+def list_mailboxes() -> Dict[str, Any]:
+    con = store_db.connect()
+    rows = con.execute(
+        """
+        SELECT m.mailbox_id, m.mailbox_type, m.name,
+               COUNT(me.mailbox_email_id) AS email_count
+        FROM mailbox m
+        LEFT JOIN mailbox_email me ON me.mailbox_id = m.mailbox_id
+        GROUP BY m.mailbox_id, m.mailbox_type, m.name
+        ORDER BY email_count DESC
+        """
+    ).fetchall()
+    mailboxes = [
+        {
+            "mailbox_id": r[0],
+            "mailbox_type": r[1],
+            "name": r[2] or r[0],
+            "email_count": r[3],
+        }
+        for r in rows
+    ]
+    # Always include "enron_import" even if not in mailbox table
+    if not any(m["mailbox_id"] == "enron_import" for m in mailboxes):
+        enron_count = con.execute(
+            "SELECT COUNT(*) FROM mailbox_email WHERE mailbox_id = 'enron_import'"
+        ).fetchone()[0]
+        if enron_count > 0:
+            mailboxes.append(
+                {
+                    "mailbox_id": "enron_import",
+                    "mailbox_type": "dataset",
+                    "name": "Enron Dataset",
+                    "email_count": enron_count,
+                }
+            )
+    return {"status": "ok", "mailboxes": mailboxes}
 
 
 def _set_db_path(db_path: Optional[str]) -> None:
@@ -296,7 +454,11 @@ class CompileConfigRequest(BaseModel):
     db_path: Optional[str] = None
 
 
-@app.post("/config/compile")
+@app.post(
+    "/config/compile",
+    summary="Compile Config",
+    description="Compiles natural-language preferences into structured configuration (classifications and automation rules). Does not persist.",
+)
 def compile_config(req: CompileConfigRequest) -> Dict[str, Any]:
     _set_db_path(req.db_path)
     system_prompt = (
@@ -348,9 +510,12 @@ Output a JSON object with these keys (use empty arrays for "all categories"):
 """
 
 
-@app.post("/config/compile-preferences")
+@app.post(
+    "/config/compile-preferences",
+    summary="Compile Preferences",
+    description="Compiles natural-language automation instructions into structured preferences JSON. Does not persist.",
+)
 def compile_preferences(req: CompilePreferencesRequest) -> Dict[str, Any]:
-    """Convert natural-language automation preferences to JSON. Does not save."""
     _set_db_path(req.db_path)
     cfg = db_ops.get_user_config(req.user_id)
     classifications = json.loads(cfg.get("classifications_json") or "{}")
@@ -378,7 +543,11 @@ class SuggestLabelsRequest(BaseModel):
     db_path: Optional[str] = None
 
 
-@app.post("/config/suggest-labels")
+@app.post(
+    "/config/suggest-labels",
+    summary="Suggest Labels",
+    description="Proposes classification labels from sampled inbox messages. User reviews and applies via taxonomy/apply.",
+)
 def suggest_labels(req: SuggestLabelsRequest) -> Dict[str, Any]:
     _set_db_path(req.db_path)
     samples = _load_message_samples(req.mailbox_id, req.sample_limit)
@@ -438,7 +607,11 @@ class DiscoverTaxonomyRequest(BaseModel):
     db_path: Optional[str] = None
 
 
-@app.post("/taxonomy/discover")
+@app.post(
+    "/taxonomy/discover",
+    summary="Discover Taxonomy",
+    description="Proposes a MECE taxonomy of email categories from inbox samples. User reviews and applies via taxonomy/apply.",
+)
 def taxonomy_discover(req: DiscoverTaxonomyRequest) -> Dict[str, Any]:
     _set_db_path(req.db_path)
     # enron_import and other historical mailboxes: no date filter
@@ -511,7 +684,11 @@ class ApplyTaxonomyRequest(BaseModel):
     db_path: Optional[str] = None
 
 
-@app.post("/taxonomy/apply")
+@app.post(
+    "/taxonomy/apply",
+    summary="Apply Taxonomy",
+    description="Persists the user-approved taxonomy to the system. Replaces the active classification categories.",
+)
 def taxonomy_apply(req: ApplyTaxonomyRequest) -> Dict[str, Any]:
     _set_db_path(req.db_path)
     if not req.proposed_taxonomy:
@@ -583,7 +760,11 @@ class ApplyPreferencesRequest(BaseModel):
     db_path: Optional[str] = None
 
 
-@app.post("/config/apply-preferences")
+@app.post(
+    "/config/apply-preferences",
+    summary="Apply Preferences",
+    description="Persists automation preferences (per-category actions: summarise, extract, draft, translate) to the system.",
+)
 def apply_preferences(req: ApplyPreferencesRequest) -> Dict[str, Any]:
     _set_db_path(req.db_path)
     if not req.preferences:
@@ -608,7 +789,11 @@ def apply_preferences(req: ApplyPreferencesRequest) -> Dict[str, Any]:
     }
 
 
-@app.get("/config")
+@app.get(
+    "/config",
+    summary="Get Config",
+    description="Returns saved taxonomy and automation preferences for the Settings UI. Merges discovered categories from the database.",
+)
 def get_config(
     user_id: str = "user_1",
     mailbox_id: Optional[str] = None,
@@ -656,7 +841,11 @@ def get_config(
     }
 
 
-@app.get("/config/labels")
+@app.get(
+    "/config/labels",
+    summary="Get Labels",
+    description="Returns taxonomy labels (merges user config with categories present in the database).",
+)
 def get_config_labels(
     user_id: str = "user_1",
     db_path: Optional[str] = None,
@@ -695,7 +884,11 @@ class MailboxMapRequest(BaseModel):
     db_path: Optional[str] = None
 
 
-@app.post("/mailbox/map")
+@app.post(
+    "/mailbox/map",
+    summary="Map Mailbox",
+    description="Maps a mailbox message to the canonical data model. Used during ingestion.",
+)
 def mailbox_map(req: MailboxMapRequest) -> Dict[str, Any]:
     _set_db_path(req.db_path)
     if not req.email_id and not req.message_id:
@@ -768,12 +961,19 @@ def mailbox_map(req: MailboxMapRequest) -> Dict[str, Any]:
     }
 
 
-@app.get("/mailbox/{mailbox_id}/inbox")
+@app.get(
+    "/mailbox/{mailbox_id}/inbox",
+    summary="Mailbox Inbox",
+    description="Retrieves inbox items with artifact flags, categories, and metadata for the Dashboard.",
+)
 def mailbox_inbox(
     mailbox_id: str,
     limit: int = 50,
     offset: int = 0,
     include_body: bool = False,
+    search: Optional[str] = None,
+    category: Optional[str] = None,
+    sort: str = "date_desc",
     db_path: Optional[str] = None,
 ) -> Dict[str, Any]:
     _set_db_path(db_path)
@@ -782,6 +982,34 @@ def mailbox_inbox(
         body_col = "LEFT(COALESCE(m.body_text, ''), 4000) AS body_text, LEFT(COALESCE(e.body_html, ''), 8000) AS body_html"
     else:
         body_col = "NULL AS body_text, NULL AS body_html"
+
+    # Build dynamic WHERE and ORDER BY
+    where_clauses = ["me.mailbox_id = ?"]
+    params: list = [mailbox_id]
+
+    if search:
+        where_clauses.append("(LOWER(e.subject) LIKE ? OR LOWER(e.from_addr) LIKE ?)")
+        search_term = f"%{search.lower()}%"
+        params.extend([search_term, search_term])
+
+    if category:
+        where_clauses.append("COALESCE(m.manual_category, m.category) = ?")
+        params.append(category)
+
+    where_sql = " AND ".join(where_clauses)
+
+    sort_map = {
+        "date_desc": "e.received_at DESC NULLS LAST",
+        "date_asc": "e.received_at ASC NULLS LAST",
+        "sender_asc": "LOWER(e.from_addr) ASC NULLS LAST, e.received_at DESC",
+        "sender_desc": "LOWER(e.from_addr) DESC NULLS LAST, e.received_at DESC",
+        "subject_asc": "LOWER(e.subject) ASC NULLS LAST, e.received_at DESC",
+        "subject_desc": "LOWER(e.subject) DESC NULLS LAST, e.received_at DESC",
+    }
+    order_sql = sort_map.get(sort, sort_map["date_desc"])
+
+    params.extend([limit, offset])
+
     rows = con.execute(
         f"""
         SELECT
@@ -836,25 +1064,16 @@ def mailbox_inbox(
                 AND a.artifact_type = 'extracted_fields'
                 AND ar.status = 'success'
             ) THEN 1 ELSE 0
-          END AS has_extraction,
-          CASE
-            WHEN EXISTS (
-              SELECT 1 FROM automation_run ar
-              JOIN artifact a ON a.run_id = ar.run_id
-              WHERE ar.mailbox_id = me.mailbox_id
-                AND ar.email_id = me.email_id
-                AND ar.status = 'success'
-            ) THEN 0 ELSE 1
-          END AS sort_has_artifact
+          END AS has_extraction
         FROM mailbox_email me
         JOIN email e ON e.email_id = me.email_id
         LEFT JOIN message m ON m.id = e.provider_msg_id
         LEFT JOIN email_flag ef ON ef.mailbox_email_id = me.mailbox_email_id
-        WHERE me.mailbox_id = ?
-        ORDER BY sort_has_artifact, e.received_at DESC NULLS LAST
+        WHERE {where_sql}
+        ORDER BY {order_sql}
         LIMIT ? OFFSET ?
         """,
-        (mailbox_id, limit, offset),
+        tuple(params),
     ).fetchall()
 
     def _body(row):
@@ -891,7 +1110,11 @@ def mailbox_inbox(
     return {"status": "ok", "mailbox_id": mailbox_id, "items": items}
 
 
-@app.get("/mailbox/{mailbox_id}/email/{email_id}")
+@app.get(
+    "/mailbox/{mailbox_id}/email/{email_id}",
+    summary="Email Detail",
+    description="Returns full email details: body, category, classification history, and confidence scores.",
+)
 def mailbox_email_detail(
     mailbox_id: str,
     email_id: str,
@@ -971,7 +1194,11 @@ def mailbox_email_detail(
     }
 
 
-@app.get("/mailbox/{mailbox_id}/email/{email_id}/artifacts")
+@app.get(
+    "/mailbox/{mailbox_id}/email/{email_id}/artifacts",
+    summary="Email Artifacts",
+    description="Retrieves generated artifacts (summaries, extractions, drafts, translations) for a specific email.",
+)
 def mailbox_email_artifacts(
     mailbox_id: str,
     email_id: str,
@@ -1022,7 +1249,11 @@ def mailbox_email_artifacts(
     }
 
 
-@app.get("/dataset/summary")
+@app.get(
+    "/dataset/summary",
+    summary="Dataset Summary",
+    description="Returns corpus statistics (message counts, date range, category distribution). Supports Enron and Graph mailboxes.",
+)
 def dataset_summary(db_path: Optional[str] = None) -> Dict[str, Any]:
     _set_db_path(db_path)
     con = store_db.connect()
@@ -1152,7 +1383,11 @@ def set_manual_category(
     }
 
 
-@app.get("/evaluation/labeling-samples")
+@app.get(
+    "/evaluation/labeling-samples",
+    summary="Labeling Samples",
+    description="Returns stratified email samples for manual labeling (ground-truth construction for evaluation).",
+)
 def labeling_samples(
     mailbox_id: str,
     limit: int = 50,
@@ -1226,7 +1461,11 @@ def labeling_samples(
     }
 
 
-@app.get("/evaluation/classification-metrics")
+@app.get(
+    "/evaluation/classification-metrics",
+    summary="Classification Metrics",
+    description="Returns precision, recall, F1, and confusion matrix against manually labeled ground truth.",
+)
 def classification_metrics(
     mailbox_id: Optional[str] = None,
     db_path: Optional[str] = None,
@@ -1308,7 +1547,11 @@ def classification_metrics(
     }
 
 
-@app.get("/audit/runs")
+@app.get(
+    "/audit/runs",
+    summary="Audit Runs",
+    description="Returns execution history of automation runs (Activity Log data).",
+)
 def audit_runs(
     mailbox_id: Optional[str] = None,
     limit: int = 100,
@@ -1376,7 +1619,11 @@ class IngestRequest(BaseModel):
     db_path: Optional[str] = None
 
 
-@app.post("/pipeline/ingest")
+@app.post(
+    "/pipeline/ingest",
+    summary="Pipeline Ingest",
+    description="Triggers email ingestion from Microsoft Graph. Stores raw messages in the bronze layer.",
+)
 def pipeline_ingest(req: IngestRequest) -> Dict[str, Any]:
     _set_db_path(req.db_path)
     # enron_import: skip Graph fetch (data comes from CSV import)
@@ -1428,7 +1675,11 @@ class AutomateRequest(BaseModel):
     db_path: Optional[str] = None
 
 
-@app.post("/pipeline/automate")
+@app.post(
+    "/pipeline/automate",
+    summary="Pipeline Automate",
+    description="Executes hybrid classification and automation per user preferences. Idempotent; duplicate runs produce no new artifacts.",
+)
 def pipeline_automate(req: AutomateRequest) -> Dict[str, Any]:
     _set_db_path(req.db_path)
     cfg = db_ops.get_user_config(req.user_id)
@@ -1677,3 +1928,9 @@ def pipeline_automate(req: AutomateRequest) -> Dict[str, Any]:
                 )
 
     return {"status": "ok", "processed": processed}
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    uvicorn.run(app, host="127.0.0.1", port=8001)
